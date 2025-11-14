@@ -25,13 +25,14 @@ const bot = new TelegramBot(TELEGRAM_TOKEN, { polling: true });
 const genai = new GoogleGenerativeAI(GEMINI_API_KEY);
 
 async function ensureUser(chatId) {
-  const now = Date.now();
+  const now = new Date().toISOString();
   const { data, error } = await supabase.from('users').select('*').eq('chat_id', String(chatId)).maybeSingle();
   if (error) throw error;
   if (data) return data;
-  const { data: newUser, error: insertErr } = await supabase.from('users').insert({ chat_id: String(chatId), words_per_day: 1, created_at: now }).select().maybeSingle();
+  const { data: newUserData, error: insertErr } = await supabase.from('users').insert({ chat_id: String(chatId), words_per_day: 1, created_at: now }).select().single();
   if (insertErr) throw insertErr;
-  await supabase.from('user_stats').insert({ user_id: newUser.id, streak: 0, last_completed: null }).maybeSingle();
+  const newUser = newUserData;
+  await supabase.from('user_stats').insert({ user_id: newUser.id, streak: 0, last_completed: null });
   return newUser;
 }
 
@@ -83,8 +84,8 @@ async function generateUniqueWord(avoidList = []) {
     const seed = Math.floor(Math.random() * 1e9) + i;
     const candidate = await generateWithSeed(seed, avoidList);
     if (!candidate || !candidate.word) continue;
-    const existing = await supabase.from('words').select('id').ilike('word', candidate.word).maybeSingle();
-    if (!existing || !existing.data) {
+    const { data: existing } = await supabase.from('words').select('id').ilike('word', candidate.word).maybeSingle();
+    if (!existing) {
       return candidate;
     }
   }
@@ -92,24 +93,29 @@ async function generateUniqueWord(avoidList = []) {
 }
 
 async function saveWordAndAssignToUsers(wordObj, servedForUsers = []) {
-  const now = Date.now();
-  const { data: wordRow } = await supabase.from('words').insert({
+  const now = new Date();
+  const nowISO = now.toISOString();
+  const nextReviewDate = new Date(now.getTime() + 2 * 24 * 60 * 60 * 1000);
+  const nextReviewISO = nextReviewDate.toISOString();
+  
+  const { data: wordRowData, error: insertError } = await supabase.from('words').insert({
     word: wordObj.word,
     part_of_speech: wordObj.part_of_speech || '',
     definition: wordObj.definition || wordObj.definition || '',
     example: wordObj.example || wordObj.example || '',
     source: 'gemini',
-    created_at: now
-  }).select().maybeSingle();
+    created_at: nowISO
+  }).select().single();
 
-  if (!wordRow) return;
+  if (insertError || !wordRowData) return;
+  const wordRow = wordRowData;
 
   for (const u of servedForUsers) {
     await supabase.from('user_words').insert({
       user_id: u.id,
       word_id: wordRow.id,
-      served_at: now,
-      next_review: now + 2 * 24 * 60 * 60 * 1000,
+      served_at: nowISO,
+      next_review: nextReviewISO,
       interval: 2,
       served_index: u.index || 1
     });
@@ -177,7 +183,7 @@ async function eveningUsage() {
 }
 
 async function runReviewJob() {
-  const now = Date.now();
+  const now = new Date().toISOString();
   const { data: due } = await supabase.from('user_words').select('id,user_id,word_id,interval,next_review').lte('next_review', now);
   if (!due) return;
   for (const row of due) {
@@ -187,7 +193,8 @@ async function runReviewJob() {
       if (!user || !word) continue;
       await bot.sendMessage(user.chat_id, `Review: do you remember the word "${word.word}"? Reply with it if you do.`);
       const nextInterval = Math.max(1, Math.round((row.interval || 2) * 2.5));
-      const nextReview = now + nextInterval * 24 * 60 * 60 * 1000;
+      const nextReviewDate = new Date(Date.now() + nextInterval * 24 * 60 * 60 * 1000);
+      const nextReview = nextReviewDate.toISOString();
       await supabase.from('user_words').update({ interval: nextInterval, next_review: nextReview }).eq('id', row.id);
     } catch (e) {
       console.warn('runReviewJob error', e);
@@ -196,7 +203,8 @@ async function runReviewJob() {
 }
 
 async function weeklySummary() {
-  const weekStart = Date.now() - 7 * 24 * 60 * 60 * 1000;
+  const weekStartDate = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
+  const weekStart = weekStartDate.toISOString();
   const { data: users } = await supabase.from('users').select('*');
   if (!users) return;
   for (const u of users) {
@@ -215,17 +223,24 @@ async function weeklySummary() {
 }
 
 async function updateUserStreak(userId) {
-  const now = Date.now();
+  const now = new Date();
+  const nowISO = now.toISOString();
   const oneDay = 24 * 60 * 60 * 1000;
   const { data: stat } = await supabase.from('user_stats').select('*').eq('user_id', userId).maybeSingle();
   if (!stat) {
-    await supabase.from('user_stats').insert({ user_id: userId, streak: 1, last_completed: now });
+    await supabase.from('user_stats').insert({ user_id: userId, streak: 1, last_completed: nowISO });
     return;
   }
-  if (stat.last_completed && now - stat.last_completed <= oneDay * 2) {
-    await supabase.from('user_stats').update({ streak: stat.streak + 1, last_completed: now }).eq('id', stat.id);
+  if (stat.last_completed) {
+    const lastCompletedDate = new Date(stat.last_completed);
+    const timeDiff = now.getTime() - lastCompletedDate.getTime();
+    if (timeDiff <= oneDay * 2) {
+      await supabase.from('user_stats').update({ streak: stat.streak + 1, last_completed: nowISO }).eq('id', stat.id);
+    } else {
+      await supabase.from('user_stats').update({ streak: 1, last_completed: nowISO }).eq('id', stat.id);
+    }
   } else {
-    await supabase.from('user_stats').update({ streak: 1, last_completed: now }).eq('id', stat.id);
+    await supabase.from('user_stats').update({ streak: 1, last_completed: nowISO }).eq('id', stat.id);
   }
 }
 
@@ -255,11 +270,12 @@ bot.onText(/\/setwords (1|2|3)/, async (msg, match) => {
 
 bot.onText(/\/today/, async (msg) => {
   const chatId = msg.chat.id;
-  const { data: wordRow } = await supabase.from('words').select('*').order('created_at', { ascending: false }).limit(1).maybeSingle();
-  if (!wordRow) {
+  const { data: wordRows } = await supabase.from('words').select('*').order('created_at', { ascending: false }).limit(1);
+  if (!wordRows || wordRows.length === 0) {
     await bot.sendMessage(chatId, 'No word available yet.');
     return;
   }
+  const wordRow = wordRows[0];
   await bot.sendMessage(chatId, `Word: ${wordRow.word}\nDefinition: ${wordRow.definition}\nExample: ${wordRow.example}`);
 });
 
@@ -282,8 +298,8 @@ bot.on('message', async (msg) => {
   if (!user) return;
   const todayStart = new Date();
   todayStart.setHours(0, 0, 0, 0);
-  const todayMs = todayStart.getTime();
-  const { data: pending } = await supabase.from('user_words').select('id,word_id,last_response,served_at,words:word_id(word)').eq('user_id', user.id).gte('served_at', todayMs).order('served_at', { ascending: true });
+  const todayISO = todayStart.toISOString();
+  const { data: pending } = await supabase.from('user_words').select('id,word_id,last_response,served_at,words:word_id(word)').eq('user_id', user.id).gte('served_at', todayISO).order('served_at', { ascending: true });
   if (!pending || pending.length === 0) return;
   const shortReply = text.split(' ').length <= 3;
   if (shortReply) {
