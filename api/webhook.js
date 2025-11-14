@@ -410,14 +410,179 @@ module.exports = async (req, res) => {
         messageId: message.message_id
       });
       
-      // Process the update - bot handlers will receive the message
-      // Only process if we have a valid message structure
+      // Manually route to handlers (processUpdate doesn't work reliably in serverless)
+      // This ensures handlers fire correctly in Vercel
       try {
-        await bot.processUpdate(update);
+        const text = (message.text || '').trim();
+        const chatId = message.chat.id;
+        
+        // Route commands manually
+        if (text === '/start') {
+          console.log('🔀 Routing to /start handler');
+          // Manually call the start handler logic
+          try {
+            const { data: existingUser } = await supabase.from('users').select('*').eq('chat_id', String(chatId)).maybeSingle();
+            const isNewUser = !existingUser;
+            
+            const user = await ensureUser(chatId);
+            
+            const todayStart = new Date();
+            todayStart.setUTCHours(0, 0, 0, 0);
+            const todayISO = todayStart.toISOString();
+            const { data: todayWords } = await supabase.from('user_words')
+              .select('served_at')
+              .eq('user_id', user.id)
+              .gte('served_at', todayISO);
+            
+            const hasTodayWords = hasReceivedTodayWords(todayWords);
+            const welcomeMsg = getWelcomeMessage(isNewUser, hasTodayWords);
+            
+            await bot.sendMessage(chatId, welcomeMsg, { parse_mode: 'HTML' });
+            
+            if (isNewUser && ADMIN_CHAT_ID) {
+              await bot.sendMessage(ADMIN_CHAT_ID, `🎉 New user started: ${chatId}`);
+            }
+            console.log('✅ /start handler completed');
+          } catch (e) {
+            console.error('❌ Error in /start handler:', e);
+            await bot.sendMessage(chatId, '😔 Oops! Something went wrong. Please try again in a moment.');
+          }
+        } else if (text.match(/^\/setwords (1|2|3)$/)) {
+          console.log('🔀 Routing to /setwords handler');
+          const match = text.match(/^\/setwords (1|2|3)$/);
+          const num = parseInt(match[1], 10);
+          const { data: user } = await supabase.from('users').select('*').eq('chat_id', String(chatId)).maybeSingle();
+          if (!user) {
+            await bot.sendMessage(chatId, '👋 Hi! Please send /start to get started first.');
+          } else {
+            await supabase.from('users').update({ words_per_day: num }).eq('id', user.id);
+            const emoji = num === 1 ? '📖' : num === 2 ? '📚' : '📚📚📚';
+            await bot.sendMessage(chatId, `${emoji} Perfect! I'll send you ${num} word${num > 1 ? 's' : ''} every day.\n\nThis will take effect from tomorrow's delivery!`);
+          }
+          console.log('✅ /setwords handler completed');
+        } else if (text === '/today') {
+          console.log('🔀 Routing to /today handler');
+          const { data: user } = await supabase.from('users').select('*').eq('chat_id', String(chatId)).maybeSingle();
+          if (!user) {
+            await bot.sendMessage(chatId, '👋 Hi! Please send /start to get started first.');
+          } else {
+            const todayStart = new Date();
+            todayStart.setUTCHours(0, 0, 0, 0);
+            const todayISO = todayStart.toISOString();
+            const { data: userWords } = await supabase.from('user_words')
+              .select('word_id,words:word_id(word,part_of_speech,definition,example)')
+              .eq('user_id', user.id)
+              .gte('served_at', todayISO)
+              .order('served_at', { ascending: true });
+            
+            if (!userWords || userWords.length === 0) {
+              const timeUntil = formatTimeUntilNextWord();
+              await bot.sendMessage(chatId, `📖 You haven't received today's words yet.\n\n⏰ Your next words will arrive in ${timeUntil}!\n\nIn the meantime, use /help to see what you can do.`);
+            } else {
+              let message = `📚 Today's Words (${userWords.length}):\n\n`;
+              userWords.forEach((uw, idx) => {
+                const word = uw.words || {};
+                message += `${idx + 1}. <b>${word.word}</b>\n`;
+                if (word.part_of_speech) message += `   <i>${word.part_of_speech}</i>\n`;
+                message += `   Definition: ${word.definition}\n`;
+                message += `   Example: ${word.example}\n\n`;
+              });
+              message += `💡 Remember to reply to the prompts today to practice!`;
+              await bot.sendMessage(chatId, message, { parse_mode: 'HTML' });
+            }
+          }
+          console.log('✅ /today handler completed');
+        } else if (text === '/progress') {
+          console.log('🔀 Routing to /progress handler');
+          const { data: user } = await supabase.from('users').select('*').eq('chat_id', String(chatId)).maybeSingle();
+          if (!user) {
+            await bot.sendMessage(chatId, '👋 Hi! Please send /start to get started first.');
+          } else {
+            const { data: stat } = await supabase.from('user_stats').select('*').eq('user_id', user.id).maybeSingle();
+            const { data: learned } = await supabase.from('user_words')
+              .select('id,served_at,word_id,words:word_id(word)')
+              .eq('user_id', user.id)
+              .order('served_at', { ascending: true });
+            
+            const wordCount = learned ? learned.length : 0;
+            const streak = stat ? stat.streak : 0;
+            
+            let text = `📊 Your Learning Progress\n\n`;
+            text += `📚 Total words learned: <b>${wordCount}</b>\n`;
+            text += `🔥 Current streak: <b>${streak} day${streak !== 1 ? 's' : ''}</b>\n`;
+            text += `📖 Words per day: <b>${user.words_per_day}</b>\n\n`;
+            
+            if (learned && learned.length > 0) {
+              text += `✨ Recent words:\n`;
+              learned.slice(-10).reverse().forEach((l, idx) => {
+                text += `${idx + 1}. ${l.words?.word || 'N/A'}\n`;
+              });
+            } else {
+              text += `💡 Start learning! Your first words are coming soon!`;
+            }
+            
+            await bot.sendMessage(chatId, text, { parse_mode: 'HTML' });
+          }
+          console.log('✅ /progress handler completed');
+        } else if (text === '/help') {
+          console.log('🔀 Routing to /help handler');
+          const helpMsg = getHelpMessage();
+          await bot.sendMessage(chatId, helpMsg);
+          console.log('✅ /help handler completed');
+        } else if (text && !text.startsWith('/')) {
+          // Regular message - handle it
+          console.log('🔀 Routing to message handler');
+          const { data: user } = await supabase.from('users').select('*').eq('chat_id', String(chatId)).maybeSingle();
+          if (user) {
+            const todayStart = new Date();
+            todayStart.setUTCHours(0, 0, 0, 0);
+            const todayISO = todayStart.toISOString();
+            const { data: pending } = await supabase.from('user_words')
+              .select('id,word_id,last_response,served_at,words:word_id(word)')
+              .eq('user_id', user.id)
+              .gte('served_at', todayISO)
+              .order('served_at', { ascending: true });
+            
+            if (pending && pending.length > 0) {
+              const shortReply = text.split(' ').length <= 3;
+              if (shortReply) {
+                const lastPending = pending[pending.length - 1];
+                const expected = (lastPending.words && lastPending.words.word) || '';
+                const isCorrect = text.toLowerCase().includes(expected.toLowerCase());
+                
+                if (isCorrect) {
+                  await supabase.from('user_words').update({ correct_count: (lastPending.correct_count || 0) + 1 }).eq('id', lastPending.id);
+                  const response = getFriendlyResponse(true, expected);
+                  await bot.sendMessage(chatId, response);
+                } else {
+                  await supabase.from('user_words').update({ last_response: text }).eq('id', lastPending.id);
+                  const response = getFriendlyResponse(false, expected);
+                  await bot.sendMessage(chatId, response);
+                }
+              } else {
+                for (const p of pending) {
+                  if (!p.last_response) {
+                    await supabase.from('user_words').update({ last_response: text }).eq('id', p.id);
+                  }
+                }
+                await bot.sendMessage(chatId, '✨ Great! Your usage has been saved and your streak has been updated. Keep up the excellent work! 💪');
+                try {
+                  await updateUserStreak(user.id);
+                } catch (e) {
+                  console.warn('updateUserStreak error', e);
+                }
+              }
+            }
+          }
+          console.log('✅ Message handler completed');
+        } else {
+          console.log('⚠️ Unhandled message type or empty text');
+        }
+        
         console.log('✅ Successfully processed update');
       } catch (processError) {
-        // If processUpdate fails, log but don't crash
-        console.error('❌ Error in bot.processUpdate:', {
+        // If processing fails, log but don't crash
+        console.error('❌ Error processing update:', {
           error: processError.message,
           stack: processError.stack,
           updateId: update.update_id
