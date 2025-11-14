@@ -31,15 +31,39 @@ try {
 }
 
 async function ensureUser(chatId) {
-  const now = new Date().toISOString();
-  const { data, error } = await supabase.from('users').select('*').eq('chat_id', String(chatId)).maybeSingle();
-  if (error) throw error;
-  if (data) return data;
-  const { data: newUserData, error: insertErr } = await supabase.from('users').insert({ chat_id: String(chatId), words_per_day: 1, created_at: now }).select().single();
-  if (insertErr) throw insertErr;
-  const newUser = newUserData;
-  await supabase.from('user_stats').insert({ user_id: newUser.id, streak: 0, last_completed: null });
-  return newUser;
+  try {
+    const now = new Date().toISOString();
+    const { data, error } = await supabase.from('users').select('*').eq('chat_id', String(chatId)).maybeSingle();
+    if (error) {
+      console.error('Error fetching user:', error);
+      throw new Error(`Database error: ${error.message || 'Failed to fetch user'}`);
+    }
+    if (data) return data;
+    
+    const { data: newUserData, error: insertErr } = await supabase.from('users').insert({ chat_id: String(chatId), words_per_day: 1, created_at: now }).select().single();
+    if (insertErr) {
+      console.error('Error inserting user:', insertErr);
+      throw new Error(`Database error: ${insertErr.message || 'Failed to create user'}`);
+    }
+    if (!newUserData) {
+      throw new Error('Failed to create user - no data returned');
+    }
+    
+    const newUser = newUserData;
+    const { error: statsErr } = await supabase.from('user_stats').insert({ user_id: newUser.id, streak: 0, last_completed: null });
+    if (statsErr) {
+      console.warn('Error inserting user_stats (non-critical):', statsErr);
+      // Don't throw - user creation succeeded
+    }
+    return newUser;
+  } catch (error) {
+    console.error('ensureUser error:', error);
+    // Re-throw with more context
+    if (error.message && error.message.includes('fetch failed')) {
+      throw new Error('Network error connecting to database. Please try again in a moment.');
+    }
+    throw error;
+  }
 }
 
 async function updateUserStreak(userId) {
