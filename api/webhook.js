@@ -88,8 +88,23 @@ async function updateUserStreak(userId) {
   }
 }
 
+// Helper function to safely get message from update
+function getMessageFromUpdate(update) {
+  return update.message || update.edited_message || update.channel_post || update.edited_channel_post || null;
+}
+
+// Helper function to safely get chat ID from message
+function getChatId(msg) {
+  if (!msg || !msg.chat) return null;
+  return msg.chat.id;
+}
+
 // Bot command handlers
 bot.onText(/\/start/, async (msg) => {
+  if (!msg || !msg.chat) {
+    console.warn('Invalid message in /start handler');
+    return;
+  }
   const chatId = msg.chat.id;
   try {
     // Check if user already exists
@@ -122,6 +137,10 @@ bot.onText(/\/start/, async (msg) => {
 });
 
 bot.onText(/\/setwords (1|2|3)/, async (msg, match) => {
+  if (!msg || !msg.chat) {
+    console.warn('Invalid message in /setwords handler');
+    return;
+  }
   const chatId = msg.chat.id;
   const num = parseInt(match[1], 10);
   const { data: user } = await supabase.from('users').select('*').eq('chat_id', String(chatId)).maybeSingle();
@@ -135,6 +154,10 @@ bot.onText(/\/setwords (1|2|3)/, async (msg, match) => {
 });
 
 bot.onText(/\/today/, async (msg) => {
+  if (!msg || !msg.chat) {
+    console.warn('Invalid message in /today handler');
+    return;
+  }
   const chatId = msg.chat.id;
   const { data: user } = await supabase.from('users').select('*').eq('chat_id', String(chatId)).maybeSingle();
   if (!user) {
@@ -172,6 +195,10 @@ bot.onText(/\/today/, async (msg) => {
 });
 
 bot.onText(/\/progress/, async (msg) => {
+  if (!msg || !msg.chat) {
+    console.warn('Invalid message in /progress handler');
+    return;
+  }
   const chatId = msg.chat.id;
   const { data: user } = await supabase.from('users').select('*').eq('chat_id', String(chatId)).maybeSingle();
   if (!user) {
@@ -206,12 +233,22 @@ bot.onText(/\/progress/, async (msg) => {
 });
 
 bot.onText(/\/help/, async (msg) => {
+  if (!msg || !msg.chat) {
+    console.warn('Invalid message in /help handler');
+    return;
+  }
   const chatId = msg.chat.id;
   const helpMsg = getHelpMessage();
   await bot.sendMessage(chatId, helpMsg);
 });
 
 bot.on('message', async (msg) => {
+  // Guard: ensure message and chat exist
+  if (!msg || !msg.chat) {
+    console.warn('Invalid message in message handler');
+    return;
+  }
+  
   const chatId = msg.chat.id;
   const text = (msg.text || '').trim();
   if (text.startsWith('/')) return;
@@ -261,7 +298,80 @@ module.exports = async (req, res) => {
 
   if (req.method === 'POST') {
     try {
-      await bot.processUpdate(req.body);
+      const update = req.body;
+      
+      // Validate update structure
+      if (!update || typeof update !== 'object') {
+        console.warn('Invalid update received:', update);
+        return res.status(200).send('OK');
+      }
+      
+      // Handle different update types safely
+      // Check for non-message update types first and ignore them
+      if (update.callback_query) {
+        console.log('Callback query received (ignored)');
+        return res.status(200).send('OK');
+      }
+      
+      if (update.inline_query) {
+        console.log('Inline query received (ignored)');
+        return res.status(200).send('OK');
+      }
+      
+      if (update.chosen_inline_result) {
+        console.log('Chosen inline result received (ignored)');
+        return res.status(200).send('OK');
+      }
+      
+      if (update.poll) {
+        console.log('Poll update received (ignored)');
+        return res.status(200).send('OK');
+      }
+      
+      if (update.poll_answer) {
+        console.log('Poll answer received (ignored)');
+        return res.status(200).send('OK');
+      }
+      
+      if (update.my_chat_member) {
+        console.log('Chat member update received (ignored)');
+        return res.status(200).send('OK');
+      }
+      
+      if (update.chat_member) {
+        console.log('Chat member update received (ignored)');
+        return res.status(200).send('OK');
+      }
+      
+      if (update.chat_join_request) {
+        console.log('Chat join request received (ignored)');
+        return res.status(200).send('OK');
+      }
+      
+      // Only process updates that have message-like structures
+      const message = getMessageFromUpdate(update);
+      
+      // If no message-like structure, log and ignore
+      if (!message) {
+        console.log('Update without message structure received:', Object.keys(update));
+        return res.status(200).send('OK');
+      }
+      
+      // Ensure message has required structure before processing
+      if (!message.chat || !message.chat.id) {
+        console.warn('Message missing chat or chat.id:', message);
+        return res.status(200).send('OK');
+      }
+      
+      // Process the update - bot handlers will receive the message
+      // Only process if we have a valid message structure
+      try {
+        await bot.processUpdate(update);
+      } catch (processError) {
+        // If processUpdate fails, log but don't crash
+        console.error('Error in bot.processUpdate:', processError);
+        // Still return 200 to Telegram
+      }
       res.status(200).send('OK');
     } catch (error) {
       console.error('Error processing update:', error);
