@@ -22,12 +22,18 @@ let bot, genai;
 try {
   if (TELEGRAM_TOKEN) {
     bot = new TelegramBot(TELEGRAM_TOKEN);
+    console.log('✅ Bot initialized successfully');
+  } else {
+    console.error('❌ TELEGRAM_TOKEN missing - bot not initialized');
   }
   if (GEMINI_API_KEY) {
     genai = new GoogleGenerativeAI(GEMINI_API_KEY);
+    console.log('✅ Gemini AI initialized successfully');
+  } else {
+    console.error('❌ GEMINI_API_KEY missing - AI not initialized');
   }
 } catch (error) {
-  console.error('Error initializing bot or AI:', error);
+  console.error('❌ Error initializing bot or AI:', error);
 }
 
 async function ensureUser(chatId) {
@@ -99,13 +105,17 @@ function getChatId(msg) {
   return msg.chat.id;
 }
 
-// Bot command handlers
+// Bot command handlers - only register if bot is initialized
+if (bot) {
+  console.log('📋 Registering bot command handlers...');
+  
 bot.onText(/\/start/, async (msg) => {
   if (!msg || !msg.chat) {
-    console.warn('Invalid message in /start handler');
+    console.warn('⚠️ Invalid message in /start handler');
     return;
   }
   const chatId = msg.chat.id;
+  console.log('📝 /start command received from chatId:', chatId);
   try {
     // Check if user already exists
     const { data: existingUser } = await supabase.from('users').select('*').eq('chat_id', String(chatId)).maybeSingle();
@@ -245,13 +255,24 @@ bot.onText(/\/help/, async (msg) => {
 bot.on('message', async (msg) => {
   // Guard: ensure message and chat exist
   if (!msg || !msg.chat) {
-    console.warn('Invalid message in message handler');
+    console.warn('⚠️ Invalid message in message handler');
     return;
   }
   
   const chatId = msg.chat.id;
   const text = (msg.text || '').trim();
-  if (text.startsWith('/')) return;
+  
+  // Skip command messages (handled by onText handlers)
+  if (text.startsWith('/')) {
+    return;
+  }
+  
+  // Skip non-text messages
+  if (!text) {
+    return;
+  }
+  
+  console.log('💬 Message received:', { chatId, textLength: text.length, textPreview: text.substring(0, 30) });
   const { data: user } = await supabase.from('users').select('*').eq('chat_id', String(chatId)).maybeSingle();
   if (!user) return;
   const todayStart = new Date();
@@ -289,6 +310,10 @@ bot.on('message', async (msg) => {
   }
 });
 
+} else {
+  console.error('❌ Bot not initialized - handlers not registered');
+}
+
 module.exports = async (req, res) => {
   // Check if bot is initialized
   if (!bot) {
@@ -300,51 +325,61 @@ module.exports = async (req, res) => {
     try {
       const update = req.body;
       
+      // Log incoming update for debugging
+      console.log('📥 Webhook received update:', {
+        update_id: update?.update_id,
+        hasMessage: !!update?.message,
+        hasEditedMessage: !!update?.edited_message,
+        hasCallbackQuery: !!update?.callback_query,
+        hasInlineQuery: !!update?.inline_query,
+        keys: update ? Object.keys(update) : 'no update'
+      });
+      
       // Validate update structure
       if (!update || typeof update !== 'object') {
-        console.warn('Invalid update received:', update);
+        console.warn('❌ Invalid update received:', update);
         return res.status(200).send('OK');
       }
       
       // Handle different update types safely
       // Check for non-message update types first and ignore them
       if (update.callback_query) {
-        console.log('Callback query received (ignored)');
+        console.log('ℹ️ Callback query received (ignored)');
         return res.status(200).send('OK');
       }
       
       if (update.inline_query) {
-        console.log('Inline query received (ignored)');
+        console.log('ℹ️ Inline query received (ignored)');
         return res.status(200).send('OK');
       }
       
       if (update.chosen_inline_result) {
-        console.log('Chosen inline result received (ignored)');
+        console.log('ℹ️ Chosen inline result received (ignored)');
         return res.status(200).send('OK');
       }
       
       if (update.poll) {
-        console.log('Poll update received (ignored)');
+        console.log('ℹ️ Poll update received (ignored)');
         return res.status(200).send('OK');
       }
       
       if (update.poll_answer) {
-        console.log('Poll answer received (ignored)');
+        console.log('ℹ️ Poll answer received (ignored)');
         return res.status(200).send('OK');
       }
       
       if (update.my_chat_member) {
-        console.log('Chat member update received (ignored)');
+        console.log('ℹ️ Chat member update received (ignored)');
         return res.status(200).send('OK');
       }
       
       if (update.chat_member) {
-        console.log('Chat member update received (ignored)');
+        console.log('ℹ️ Chat member update received (ignored)');
         return res.status(200).send('OK');
       }
       
       if (update.chat_join_request) {
-        console.log('Chat join request received (ignored)');
+        console.log('ℹ️ Chat join request received (ignored)');
         return res.status(200).send('OK');
       }
       
@@ -353,28 +388,49 @@ module.exports = async (req, res) => {
       
       // If no message-like structure, log and ignore
       if (!message) {
-        console.log('Update without message structure received:', Object.keys(update));
+        console.log('⚠️ Update without message structure received. Update keys:', Object.keys(update));
         return res.status(200).send('OK');
       }
       
       // Ensure message has required structure before processing
       if (!message.chat || !message.chat.id) {
-        console.warn('Message missing chat or chat.id:', message);
+        console.warn('⚠️ Message missing chat or chat.id:', {
+          hasChat: !!message.chat,
+          hasChatId: !!(message.chat && message.chat.id),
+          messageKeys: Object.keys(message)
+        });
         return res.status(200).send('OK');
       }
+      
+      // Log message details for debugging
+      console.log('✅ Processing message:', {
+        chatId: message.chat.id,
+        hasText: !!message.text,
+        text: message.text ? message.text.substring(0, 50) : 'no text',
+        messageId: message.message_id
+      });
       
       // Process the update - bot handlers will receive the message
       // Only process if we have a valid message structure
       try {
         await bot.processUpdate(update);
+        console.log('✅ Successfully processed update');
       } catch (processError) {
         // If processUpdate fails, log but don't crash
-        console.error('Error in bot.processUpdate:', processError);
+        console.error('❌ Error in bot.processUpdate:', {
+          error: processError.message,
+          stack: processError.stack,
+          updateId: update.update_id
+        });
         // Still return 200 to Telegram
       }
       res.status(200).send('OK');
     } catch (error) {
-      console.error('Error processing update:', error);
+      console.error('❌ Error processing update:', {
+        error: error.message,
+        stack: error.stack,
+        body: req.body
+      });
       // Always return 200 to Telegram to prevent retries
       res.status(200).send('OK');
     }
