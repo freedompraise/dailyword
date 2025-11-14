@@ -1,0 +1,67 @@
+name: Bot Cron Jobs
+
+on:
+  schedule:
+    # Daily words at 8:00 AM UTC
+    - cron: "0 8 * * *"
+    # Midday recall at 12:00 PM UTC
+    - cron: "0 12 * * *"
+    # Evening challenge at 8:00 PM UTC
+    - cron: "0 20 * * *"
+    # Review job every hour
+    - cron: "0 * * * *"
+    # Weekly summary on Sundays at 8:00 PM UTC
+    - cron: "0 20 * * 0"
+  workflow_dispatch:
+    inputs:
+      job:
+        description: "Which job to run"
+        required: false
+        type: choice
+        options:
+          - daily
+          - midday
+          - evening
+          - review
+          - weekly
+
+jobs:
+  daily:
+    if: github.event.schedule == '0 8 * * *' || (github.event_name == 'workflow_dispatch' && github.event.inputs.job == 'daily')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Trigger Daily Words
+        run: |
+          curl -X POST "${{ secrets.VERCEL_URL }}/api/cron/daily" || true
+
+  midday:
+    if: github.event.schedule == '0 12 * * *' || (github.event_name == 'workflow_dispatch' && github.event.inputs.job == 'midday')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Trigger Midday Recall
+        run: |
+          curl -X POST "${{ secrets.VERCEL_URL }}/api/cron/midday" || true
+
+  evening:
+    if: github.event.schedule == '0 20 * * *' || (github.event_name == 'workflow_dispatch' && github.event.inputs.job == 'evening')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Trigger Evening Challenge
+        run: |
+          curl -X POST "${{ secrets.VERCEL_URL }}/api/cron/evening" || true
+
+  review:
+    if: github.event.schedule == '0 * * * *' || (github.event_name == 'workflow_dispatch' && github.event.inputs.job == 'review')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Trigger Review Job
+        run: |
+          curl -X POST "${{ secrets.VERCEL_URL }}/api/cron/review" || true
+
+  weekly:
+    if: github.event.schedule == '0 20 * * 0' || (github.event_name == 'workflow_dispatch' && github.event.inputs.job == 'weekly')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Trigger Weekly Summary
+        run: |
+          curl -X POST "${{ secrets.VERCEL_URL }}/api/cron/weekly" || true

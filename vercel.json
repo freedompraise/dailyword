@@ -1,0 +1,40 @@
+{
+  "version": 2,
+  "builds": [
+    {
+      "src": "api/**/*.js",
+      "use": "@vercel/node"
+    }
+  ],
+  "routes": [
+    {
+      "src": "/api/webhook",
+      "dest": "/api/webhook.js"
+    },
+    {
+      "src": "/api/cron/daily",
+      "dest": "/api/cron/daily.js"
+    },
+    {
+      "src": "/api/cron/midday",
+      "dest": "/api/cron/midday.js"
+    },
+    {
+      "src": "/api/cron/evening",
+      "dest": "/api/cron/evening.js"
+    },
+    {
+      "src": "/api/cron/review",
+      "dest": "/api/cron/review.js"
+    },
+    {
+      "src": "/api/cron/weekly",
+      "dest": "/api/cron/weekly.js"
+    },
+    {
+      "src": "/",
+      "dest": "/api/index.js"
+    }
+  ]
+}
+
