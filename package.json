@@ -6,16 +6,21 @@
         "start": "node index.js"
     },
     "dependencies": {
+        "@google/generative-ai": "^0.24.1",
         "@supabase/supabase-js": "^2.81.1",
         "axios": "^1.13.2",
         "dotenv": "^17.2.3",
         "express": "^4.21.2",
         "node-cron": "^3.0.3",
-        "node-telegram-bot-api": "^0.61.0",
-        "sqlite3": "^5.1.6"
+        "node-telegram-bot-api": "^0.61.0"
     },
-    "keywords": [],
-    "author": "",
+    "keywords": [
+    "dailyword",
+    "vocab",
+    "telegram",
+    "bot"
+    ],
+    "author": "Dailyword",
     "license": "ISC",
-    "description": ""
+    "description": "A Telegram bot for learning new words daily"
 }

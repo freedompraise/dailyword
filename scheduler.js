@@ -7,11 +7,23 @@ function scheduleAtHour(hour, fn) {
 }
 
 function start(config) {
-  const { dailyHour, middayHour, eveningHour, serveWordToAllUsers, middayRecall, eveningUsage, runReviewJob } = config;
+  const {
+    dailyHour,
+    middayHour,
+    eveningHour,
+    serveWordToAllUsers,
+    middayRecall,
+    eveningUsage,
+    runReviewJob,
+    weeklySummaryHour,
+    weeklySummary
+  } = config;
+
   scheduleAtHour(dailyHour, serveWordToAllUsers);
   scheduleAtHour(middayHour, middayRecall);
   scheduleAtHour(eveningHour, eveningUsage);
-  cron.schedule('0 * * * *', runReviewJob);
+  cron.schedule('0 * * * *', runReviewJob, { timezone: 'Africa/Lagos' });
+  cron.schedule(`0 ${weeklySummaryHour} * * 0`, weeklySummary, { timezone: 'Africa/Lagos' });
 }
 
 module.exports = { start };
