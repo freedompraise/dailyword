@@ -1,12 +1,18 @@
 // api/cron/review.js - Review job cron (runs hourly)
-require('dotenv').config();
+// Note: dotenv.config() removed - Vercel injects env vars directly
 const TelegramBot = require('node-telegram-bot-api');
 const supabase = require('../../supabaseClient');
 
 const TELEGRAM_TOKEN = process.env.TELEGRAM_TOKEN;
-const bot = new TelegramBot(TELEGRAM_TOKEN);
+const bot = TELEGRAM_TOKEN ? new TelegramBot(TELEGRAM_TOKEN) : null;
 
 module.exports = async (req, res) => {
+  if (!bot) {
+    return res.status(500).json({ 
+      error: 'Bot not configured. Please set TELEGRAM_TOKEN in Vercel environment variables.' 
+    });
+  }
+
   try {
     const now = new Date().toISOString();
     const { data: due } = await supabase.from('user_words').select('id,user_id,word_id,interval,next_review').lte('next_review', now);

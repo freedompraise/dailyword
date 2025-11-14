@@ -1,5 +1,5 @@
 // api/webhook.js - Telegram webhook handler
-require('dotenv').config();
+// Note: dotenv.config() removed - Vercel injects env vars directly
 const TelegramBot = require('node-telegram-bot-api');
 const supabase = require('../supabaseClient');
 const { GoogleGenerativeAI } = require('@google/generative-ai');
@@ -9,12 +9,26 @@ const TELEGRAM_TOKEN = process.env.TELEGRAM_TOKEN;
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
 const ADMIN_CHAT_ID = process.env.ADMIN_CHAT_ID || null;
 
+// Validate required environment variables
 if (!TELEGRAM_TOKEN || !GEMINI_API_KEY) {
-  console.error('TELEGRAM_TOKEN or GEMINI_API_KEY missing in env');
+  console.error('Missing required environment variables:', {
+    hasToken: !!TELEGRAM_TOKEN,
+    hasGeminiKey: !!GEMINI_API_KEY
+  });
 }
 
-const bot = new TelegramBot(TELEGRAM_TOKEN);
-const genai = new GoogleGenerativeAI(GEMINI_API_KEY);
+// Initialize bot and AI - will fail gracefully if tokens are missing
+let bot, genai;
+try {
+  if (TELEGRAM_TOKEN) {
+    bot = new TelegramBot(TELEGRAM_TOKEN);
+  }
+  if (GEMINI_API_KEY) {
+    genai = new GoogleGenerativeAI(GEMINI_API_KEY);
+  }
+} catch (error) {
+  console.error('Error initializing bot or AI:', error);
+}
 
 async function ensureUser(chatId) {
   const now = new Date().toISOString();
@@ -215,13 +229,20 @@ bot.on('message', async (msg) => {
 });
 
 module.exports = async (req, res) => {
+  // Check if bot is initialized
+  if (!bot) {
+    console.error('Bot not initialized - TELEGRAM_TOKEN missing');
+    return res.status(500).json({ error: 'Bot not configured. Please set TELEGRAM_TOKEN in Vercel environment variables.' });
+  }
+
   if (req.method === 'POST') {
     try {
       await bot.processUpdate(req.body);
       res.status(200).send('OK');
     } catch (error) {
       console.error('Error processing update:', error);
-      res.status(200).send('OK'); // Always return 200 to Telegram
+      // Always return 200 to Telegram to prevent retries
+      res.status(200).send('OK');
     }
   } else {
     res.status(200).send('Webhook endpoint');

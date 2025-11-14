@@ -1,5 +1,5 @@
 // api/cron/daily.js - Daily word serving cron job
-require('dotenv').config();
+// Note: dotenv.config() removed - Vercel injects env vars directly
 const TelegramBot = require('node-telegram-bot-api');
 const supabase = require('../../supabaseClient');
 const { GoogleGenerativeAI } = require('@google/generative-ai');
@@ -7,8 +7,12 @@ const { GoogleGenerativeAI } = require('@google/generative-ai');
 const TELEGRAM_TOKEN = process.env.TELEGRAM_TOKEN;
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
 
-const bot = new TelegramBot(TELEGRAM_TOKEN);
-const genai = new GoogleGenerativeAI(GEMINI_API_KEY);
+if (!TELEGRAM_TOKEN || !GEMINI_API_KEY) {
+  console.error('Missing required environment variables for daily cron');
+}
+
+const bot = TELEGRAM_TOKEN ? new TelegramBot(TELEGRAM_TOKEN) : null;
+const genai = GEMINI_API_KEY ? new GoogleGenerativeAI(GEMINI_API_KEY) : null;
 
 async function getUsedWords(limit = 500) {
   const { data, error } = await supabase.from('words').select('word').order('created_at', { ascending: false }).limit(limit);
@@ -125,6 +129,12 @@ async function serveWordsToUser(user) {
 }
 
 module.exports = async (req, res) => {
+  if (!bot || !genai) {
+    return res.status(500).json({ 
+      error: 'Bot or AI not configured. Please set TELEGRAM_TOKEN and GEMINI_API_KEY in Vercel environment variables.' 
+    });
+  }
+
   try {
     const { data: users } = await supabase.from('users').select('*');
     if (!users) {

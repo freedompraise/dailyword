@@ -1,12 +1,18 @@
 // api/cron/weekly.js - Weekly summary cron job
-require('dotenv').config();
+// Note: dotenv.config() removed - Vercel injects env vars directly
 const TelegramBot = require('node-telegram-bot-api');
 const supabase = require('../../supabaseClient');
 
 const TELEGRAM_TOKEN = process.env.TELEGRAM_TOKEN;
-const bot = new TelegramBot(TELEGRAM_TOKEN);
+const bot = TELEGRAM_TOKEN ? new TelegramBot(TELEGRAM_TOKEN) : null;
 
 module.exports = async (req, res) => {
+  if (!bot) {
+    return res.status(500).json({ 
+      error: 'Bot not configured. Please set TELEGRAM_TOKEN in Vercel environment variables.' 
+    });
+  }
+
   try {
     const weekStartDate = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
     const weekStart = weekStartDate.toISOString();
