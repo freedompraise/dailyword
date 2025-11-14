@@ -2,8 +2,8 @@
 require('dotenv').config();
 const TelegramBot = require('node-telegram-bot-api');
 const express = require('express');
-const supabase = require('./supabaseClient');
-const scheduler = require('./scheduler');
+const supabase = require('../supabaseClient');
+const scheduler = require('../scheduler');
 const { GoogleGenerativeAI } = require('@google/generative-ai');
 
 const TELEGRAM_TOKEN = process.env.TELEGRAM_TOKEN;
