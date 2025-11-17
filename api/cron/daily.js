@@ -36,18 +36,28 @@ Do not use words previously used. If the model attempts to use a previously used
 }
 
 async function generateWithSeed(seed, avoidList = []) {
-  const model = genai.getGenerativeModel({ model: 'gemini-pro' });
-  const avoidSnippet = avoidList && avoidList.length ? `\nAvoid these words: ${JSON.stringify(avoidList.slice(0, 200))}\n` : '';
-  const prompt = `${promptForSeededWord(seed)}${avoidSnippet}`;
-  const result = await model.generateContent(prompt);
-  const text = result.response?.text?.() || result.outputText || '';
   try {
-    const start = text.indexOf('{');
-    const end = text.lastIndexOf('}');
-    const jsonText = start !== -1 && end !== -1 ? text.substring(start, end + 1) : text;
-    const parsed = JSON.parse(jsonText);
-    return parsed;
-  } catch (e) {
+    const model = genai.getGenerativeModel({ model: 'gemini-1.5-flash' });
+    const avoidSnippet = avoidList && avoidList.length ? `\nAvoid these words: ${JSON.stringify(avoidList.slice(0, 200))}\n` : '';
+    const prompt = `${promptForSeededWord(seed)}${avoidSnippet}`;
+    const result = await model.generateContent(prompt);
+    const text = result.response?.text?.() || result.outputText || '';
+    try {
+      const start = text.indexOf('{');
+      const end = text.lastIndexOf('}');
+      const jsonText = start !== -1 && end !== -1 ? text.substring(start, end + 1) : text;
+      const parsed = JSON.parse(jsonText);
+      return parsed;
+    } catch (e) {
+      console.warn('Error parsing JSON from Gemini response:', e);
+      return null;
+    }
+  } catch (error) {
+    console.error('Error generating word with Gemini:', {
+      error: error.message,
+      model: 'gemini-1.5-flash',
+      seed
+    });
     return null;
   }
 }
