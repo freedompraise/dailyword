@@ -7,6 +7,7 @@
         "set-webhook": "node scripts/set-webhook.js"
     },
     "dependencies": {
+        "@google/genai": "^1.29.1",
         "@google/generative-ai": "^0.24.1",
         "@supabase/supabase-js": "^2.81.1",
         "axios": "^1.13.2",
@@ -16,10 +17,10 @@
         "node-telegram-bot-api": "^0.61.0"
     },
     "keywords": [
-    "dailyword",
-    "vocab",
-    "telegram",
-    "bot"
+        "dailyword",
+        "vocab",
+        "telegram",
+        "bot"
     ],
     "author": "Dailyword",
     "license": "ISC",
