@@ -2,15 +2,10 @@ name: Bot Cron Jobs
 
 on:
   schedule:
-    # Daily words at 8:00 AM UTC
     - cron: "0 8 * * *"
-    # Midday recall at 12:00 PM UTC
     - cron: "0 12 * * *"
-    # Evening challenge at 8:00 PM UTC
     - cron: "0 20 * * *"
-    # Review job every hour
     - cron: "0 * * * *"
-    # Weekly summary on Sundays at 8:00 PM UTC
     - cron: "0 20 * * 0"
   workflow_dispatch:
     inputs:
@@ -27,41 +22,41 @@ on:
 
 jobs:
   daily:
-    if: github.event.schedule == '0 8 * * *' || (github.event_name == 'workflow_dispatch' && github.event.inputs.job == 'daily')
+    if: github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && github.event.inputs.job == 'daily')
     runs-on: ubuntu-latest
     steps:
       - name: Trigger Daily Words
-        run: |
-          curl -X POST "${{ secrets.VERCEL_URL }}/api/cron/daily" || true
+        if: github.event_name == 'schedule' && startsWith(toJson(github.event), '{"schedule":["0 8 * * *"]}')
+        run: curl -X POST "${{ secrets.VERCEL_URL }}/api/cron/daily"
 
   midday:
-    if: github.event.schedule == '0 12 * * *' || (github.event_name == 'workflow_dispatch' && github.event.inputs.job == 'midday')
+    if: github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && github.event.inputs.job == 'midday')
     runs-on: ubuntu-latest
     steps:
       - name: Trigger Midday Recall
-        run: |
-          curl -X POST "${{ secrets.VERCEL_URL }}/api/cron/midday" || true
+        if: github.event_name == 'schedule' && startsWith(toJson(github.event), '{"schedule":["0 12 * * *"]}')
+        run: curl -X POST "${{ secrets.VERCEL_URL }}/api/cron/midday"
 
   evening:
-    if: github.event.schedule == '0 20 * * *' || (github.event_name == 'workflow_dispatch' && github.event.inputs.job == 'evening')
+    if: github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && github.event.inputs.job == 'evening')
     runs-on: ubuntu-latest
     steps:
       - name: Trigger Evening Challenge
-        run: |
-          curl -X POST "${{ secrets.VERCEL_URL }}/api/cron/evening" || true
+        if: github.event_name == 'schedule' && startsWith(toJson(github.event), '{"schedule":["0 20 * * *"]}')
+        run: curl -X POST "${{ secrets.VERCEL_URL }}/api/cron/evening"
 
   review:
-    if: github.event.schedule == '0 * * * *' || (github.event_name == 'workflow_dispatch' && github.event.inputs.job == 'review')
+    if: github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && github.event.inputs.job == 'review')
     runs-on: ubuntu-latest
     steps:
       - name: Trigger Review Job
-        run: |
-          curl -X POST "${{ secrets.VERCEL_URL }}/api/cron/review" || true
+        if: github.event_name == 'schedule' && startsWith(toJson(github.event), '{"schedule":["0 * * * *"]}')
+        run: curl -X POST "${{ secrets.VERCEL_URL }}/api/cron/review"
 
   weekly:
-    if: github.event.schedule == '0 20 * * 0' || (github.event_name == 'workflow_dispatch' && github.event.inputs.job == 'weekly')
+    if: github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && github.event.inputs.job == 'weekly')
     runs-on: ubuntu-latest
     steps:
       - name: Trigger Weekly Summary
-        run: |
-          curl -X POST "${{ secrets.VERCEL_URL }}/api/cron/weekly" || true
+        if: github.event_name == 'schedule' && startsWith(toJson(github.event), '{"schedule":["0 20 * * 0"]}')
+        run: curl -X POST "${{ secrets.VERCEL_URL }}/api/cron/weekly"
