@@ -43,7 +43,7 @@ Do not use words previously used. If the model attempts to use a previously used
 async function generateWithSeed(seed, avoidList = []) {
   try {
     const model = genai.getGenerativeModel({ 
-      model: "gemini-2.0-flash" 
+      model: "gemini-1.5-flash-8b" 
     });
     const avoidSnippet = avoidList && avoidList.length
       ? `\nAvoid these words: ${JSON.stringify(avoidList.slice(0, 200))}\n`
