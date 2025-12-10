@@ -1,18 +1,18 @@
 // api/cron/daily.js
 
-const TelegramBot = require('node-telegram-bot-api');
-const supabase = require('../../supabaseClient');
-const { GoogleGenerativeAI } = require('@google/generative-ai');
+import TelegramBot from 'node-telegram-bot-api';
+import supabase from '../../supabaseClient';
+import { InferenceClient } from '@huggingface/inference';
 
 const TELEGRAM_TOKEN = process.env.TELEGRAM_TOKEN;
-const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
+const HF_TOKEN = process.env.HF_API_KEY;
 
-if (!TELEGRAM_TOKEN || !GEMINI_API_KEY) {
+if (!TELEGRAM_TOKEN || !HF_TOKEN) {
   console.error('Missing required environment variables for daily cron');
 }
 
 const bot = TELEGRAM_TOKEN ? new TelegramBot(TELEGRAM_TOKEN) : null;
-const genai = GEMINI_API_KEY ? new GoogleGenerativeAI(GEMINI_API_KEY) : null;
+const hf = HF_TOKEN ? new InferenceClient(HF_TOKEN) : null;
 
 async function getUsedWords(limit = 500) {
   const { data, error } = await supabase
@@ -37,52 +37,39 @@ Return only valid JSON in this exact shape with no extra text:
   "example": "one example sentence using the word"
 }
 
-Do not use words previously used. If the model attempts to use a previously used word, respond with a different word.`;
+Do not use words previously used.`;
 }
 
 async function generateWithSeed(seed, avoidList = []) {
   try {
-    const model = genai.getGenerativeModel({ 
-      model: "gemini-1.5-flash-8b" 
+    const prompt = `${promptForSeededWord(seed)}${avoidList.length ? "\nAvoid these words: " + JSON.stringify(avoidList.slice(0,200)) : ''}`;
+    const response = await hf.textGeneration({
+      model: 'mistralai/Mistral-7B-Instruct-v0.2',
+      inputs: prompt,
+      parameters: { max_new_tokens: 64, temperature: 0.9 }
     });
-    const avoidSnippet = avoidList && avoidList.length
-      ? `\nAvoid these words: ${JSON.stringify(avoidList.slice(0, 200))}\n`
-      : '';
-
-    const prompt = `${promptForSeededWord(seed)}${avoidSnippet}`;
-    const result = await model.generateContent(prompt);
-
-    const text = result.response?.text?.() || result.outputText || '';
+    const text = response.generated_text;
 
     try {
       const start = text.indexOf('{');
       const end = text.lastIndexOf('}');
-      const jsonText = start !== -1 && end !== -1
-        ? text.substring(start, end + 1)
-        : text;
-
+      const jsonText = (start !== -1 && end !== -1) ? text.substring(start, end + 1) : text;
       return JSON.parse(jsonText);
     } catch (e) {
-      console.warn('Error parsing JSON from Gemini response:', e);
+      console.warn('Error parsing JSON from HF output:', e, 'raw:', text);
       return null;
     }
   } catch (error) {
-    console.error('Error generating word with Gemini:', {
-      error: error.message,
-      model: 'gemini-2.0-flash',
-      seed
-    });
+    console.error('Error generating word with HF:', error);
     return null;
   }
 }
 
 async function generateUniqueWord(avoidList = []) {
   const maxAttempts = 8;
-
   for (let i = 0; i < maxAttempts; i++) {
     const seed = Math.floor(Math.random() * 1e9) + i;
     const candidate = await generateWithSeed(seed, avoidList);
-
     if (!candidate || !candidate.word) continue;
 
     const { data: existing } = await supabase
@@ -93,15 +80,12 @@ async function generateUniqueWord(avoidList = []) {
 
     if (!existing) return candidate;
   }
-
   return null;
 }
 
 async function saveWordAndAssignToUsers(wordObj, servedForUsers = []) {
-  const now = new Date();
-  const nowISO = now.toISOString();
-  const nextReviewDate = new Date(now.getTime() + 2 * 24 * 60 * 60 * 1000);
-  const nextReviewISO = nextReviewDate.toISOString();
+  const nowISO = new Date().toISOString();
+  const nextReviewISO = new Date(Date.now() + 2 * 24 * 60 * 60 * 1000).toISOString();
 
   const { data: wordRowData, error: insertError } = await supabase
     .from('words')
@@ -110,7 +94,7 @@ async function saveWordAndAssignToUsers(wordObj, servedForUsers = []) {
       part_of_speech: wordObj.part_of_speech || '',
       definition: wordObj.definition || '',
       example: wordObj.example || '',
-      source: 'gemini',
+      source: 'hf',
       created_at: nowISO
     })
     .select()
@@ -118,12 +102,10 @@ async function saveWordAndAssignToUsers(wordObj, servedForUsers = []) {
 
   if (insertError || !wordRowData) return;
 
-  const wordRow = wordRowData;
-
   for (const u of servedForUsers) {
     await supabase.from('user_words').insert({
       user_id: u.id,
-      word_id: wordRow.id,
+      word_id: wordRowData.id,
       served_at: nowISO,
       next_review: nextReviewISO,
       interval: 2,
@@ -131,7 +113,7 @@ async function saveWordAndAssignToUsers(wordObj, servedForUsers = []) {
     });
   }
 
-  return wordRow;
+  return wordRowData;
 }
 
 async function serveWordsToUser(user) {
@@ -141,57 +123,33 @@ async function serveWordsToUser(user) {
   for (let i = 0; i < user.words_per_day; i++) {
     const candidate = await generateUniqueWord(used);
     if (!candidate) continue;
-
     used.unshift(candidate.word.toLowerCase());
     wordsToSend.push(candidate);
-
-    await saveWordAndAssignToUsers(
-      {
-        word: candidate.word,
-        part_of_speech: candidate.part_of_speech,
-        definition: candidate.definition,
-        example: candidate.example
-      },
-      [{ id: user.id, index: i + 1 }]
-    );
+    await saveWordAndAssignToUsers(candidate, [{ id: user.id, index: i + 1 }]);
   }
 
-  if (wordsToSend.length === 0) {
-    await bot.sendMessage(
-      user.chat_id,
-      'Unable to generate today words. Try again later.'
-    );
+  if (!wordsToSend.length) {
+    await bot.sendMessage(user.chat_id, 'Unable to generate today words. Try again later.');
     return;
   }
 
   let text = `Words of the day (${wordsToSend.length}):\n\n`;
-
   wordsToSend.forEach((w, idx) => {
     text += `${idx + 1}. ${w.word}\n`;
     if (w.part_of_speech) text += `${w.part_of_speech}\n`;
     text += `Definition: ${w.definition}\nExample: ${w.example}\n\n`;
   });
-
   text += 'Reply to the prompts today to practise.';
-
   await bot.sendMessage(user.chat_id, text);
 }
 
-module.exports = async (req, res) => {
-  if (!bot || !genai) {
-    return res.status(500).json({
-      error:
-        'Bot or AI not configured. Please set TELEGRAM_TOKEN and GEMINI_API_KEY in Vercel environment variables.'
-    });
+export default async function handler(req, res) {
+  if (!bot || !hf) {
+    return res.status(500).json({ error: 'Bot or HF not configured' });
   }
-
   try {
     const { data: users } = await supabase.from('users').select('*');
-
-    if (!users) {
-      return res.status(200).json({ message: 'No users found' });
-    }
-
+    if (!users) return res.status(200).json({ message: 'No users found' });
     for (const u of users) {
       try {
         await serveWordsToUser(u);
@@ -199,10 +157,9 @@ module.exports = async (req, res) => {
         console.warn('serveWordsToUser error', e);
       }
     }
-
     res.status(200).json({ message: 'Daily words served successfully' });
   } catch (error) {
     console.error('Daily cron error:', error);
     res.status(500).json({ error: error.message });
   }
-};
+}

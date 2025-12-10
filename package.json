@@ -9,6 +9,7 @@
     "dependencies": {
         "@google/genai": "^1.29.1",
         "@google/generative-ai": "^0.24.1",
+        "@huggingface/inference": "^4.13.5",
         "@supabase/supabase-js": "^2.81.1",
         "axios": "^1.13.2",
         "dotenv": "^17.2.3",
