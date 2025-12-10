@@ -2,23 +2,23 @@
 // Note: dotenv.config() removed - Vercel injects env vars directly
 const TelegramBot = require('node-telegram-bot-api');
 const supabase = require('../supabaseClient');
-const { GoogleGenerativeAI } = require('@google/generative-ai');
+const { InferenceClient } = require('@huggingface/inference');
 const { getWelcomeMessage, getHelpMessage, getFriendlyResponse, hasReceivedTodayWords, formatTimeUntilNextWord } = require('./utils');
 
 const TELEGRAM_TOKEN = process.env.TELEGRAM_TOKEN;
-const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
+const HF_API_KEY = process.env.HF_API_KEY;
 const ADMIN_CHAT_ID = process.env.ADMIN_CHAT_ID || null;
 
 // Validate required environment variables
-if (!TELEGRAM_TOKEN || !GEMINI_API_KEY) {
+if (!TELEGRAM_TOKEN || !HF_API_KEY) {
   console.error('Missing required environment variables:', {
     hasToken: !!TELEGRAM_TOKEN,
-    hasGeminiKey: !!GEMINI_API_KEY
+    hasHFKey: !!HF_API_KEY
   });
 }
 
 // Initialize bot and AI - will fail gracefully if tokens are missing
-let bot, genai;
+let bot, hf;
 try {
   if (TELEGRAM_TOKEN) {
     bot = new TelegramBot(TELEGRAM_TOKEN);
@@ -26,11 +26,11 @@ try {
   } else {
     console.error('❌ TELEGRAM_TOKEN missing - bot not initialized');
   }
-  if (GEMINI_API_KEY) {
-    genai = new GoogleGenerativeAI(GEMINI_API_KEY);
-    console.log('✅ Gemini AI initialized successfully');
+  if (HF_API_KEY) {
+      hf = new InferenceClient(HF_API_KEY);
+    console.log('✅ HF AI initialized successfully');
   } else {
-    console.error('❌ GEMINI_API_KEY missing - AI not initialized');
+    console.error('❌ HF_API_KEY missing - AI not initialized');
   }
 } catch (error) {
   console.error('❌ Error initializing bot or AI:', error);
@@ -94,6 +94,35 @@ async function updateUserStreak(userId) {
   }
 }
 
+async function getTodayWords(userId) {
+  const todayStart = new Date();
+  todayStart.setUTCHours(0, 0, 0, 0);
+  const todayISO = todayStart.toISOString();
+  const { data } = await supabase.from('user_words')
+    .select('word_id,words:word_id(word,part_of_speech,definition,example)')
+    .eq('user_id', userId)
+    .gte('served_at', todayISO)
+    .order('served_at', { ascending: true });
+  return data || [];
+}
+
+async function getDueReviewsCount(userId) {
+  const now = Date.now();
+  const { data } = await supabase.from('user_words')
+    .select('id')
+    .eq('user_id', userId)
+    .lte('next_review', now);
+  return data ? data.length : 0;
+}
+
+function buildStatusSummary({ todayCount, dueCount, wordsPerDay }) {
+  const parts = [];
+  parts.push(`📦 Today: ${todayCount} word${todayCount === 1 ? '' : 's'}`);
+  parts.push(`🔔 Reviews due: ${dueCount}`);
+  parts.push(`⚙️ Daily goal: ${wordsPerDay}`);
+  return parts.join(' • ');
+}
+
 // Helper function to safely get message from update
 function getMessageFromUpdate(update) {
   return update.message || update.edited_message || update.channel_post || update.edited_channel_post || null;
@@ -123,19 +152,19 @@ bot.onText(/\/start/, async (msg) => {
     
     const user = await ensureUser(chatId);
     
-    // Check if user has received today's words
-    const todayStart = new Date();
-    todayStart.setUTCHours(0, 0, 0, 0);
-    const todayISO = todayStart.toISOString();
-    const { data: todayWords } = await supabase.from('user_words')
-      .select('served_at')
-      .eq('user_id', user.id)
-      .gte('served_at', todayISO);
-    
+    // Status snapshot
+    const todayWords = await getTodayWords(user.id);
+    const dueCount = await getDueReviewsCount(user.id);
     const hasTodayWords = hasReceivedTodayWords(todayWords);
+    const status = buildStatusSummary({
+      todayCount: todayWords.length,
+      dueCount,
+      wordsPerDay: user.words_per_day || 1
+    });
     const welcomeMsg = getWelcomeMessage(isNewUser, hasTodayWords);
+    const plan = `\n\n${status}\n\nNext steps:\n• Use /today to see today’s words\n• Use /review to clear reviews (due: ${dueCount})\n• Use /help for commands`;
     
-    await bot.sendMessage(chatId, welcomeMsg, { parse_mode: 'HTML' });
+    await bot.sendMessage(chatId, welcomeMsg + plan, { parse_mode: 'HTML' });
     
     if (isNewUser && ADMIN_CHAT_ID) {
       await bot.sendMessage(ADMIN_CHAT_ID, `🎉 New user started: ${chatId}`);
@@ -175,19 +204,11 @@ bot.onText(/\/today/, async (msg) => {
     return;
   }
   
-  // Get today's words for this user
-  const todayStart = new Date();
-  todayStart.setUTCHours(0, 0, 0, 0);
-  const todayISO = todayStart.toISOString();
-  const { data: userWords } = await supabase.from('user_words')
-    .select('word_id,words:word_id(word,part_of_speech,definition,example)')
-    .eq('user_id', user.id)
-    .gte('served_at', todayISO)
-    .order('served_at', { ascending: true });
-  
+  const userWords = await getTodayWords(user.id);
+  const dueCount = await getDueReviewsCount(user.id);
   if (!userWords || userWords.length === 0) {
     const timeUntil = formatTimeUntilNextWord();
-    await bot.sendMessage(chatId, `📖 You haven't received today's words yet.\n\n⏰ Your next words will arrive in ${timeUntil}!\n\nIn the meantime, use /help to see what you can do.`);
+    await bot.sendMessage(chatId, `📖 You haven't received today's words yet.\n\n⏰ Your next words will arrive in ${timeUntil}.\n🔔 Reviews due: ${dueCount}\nUse /review to clear them now.`);
     return;
   }
   
@@ -199,7 +220,7 @@ bot.onText(/\/today/, async (msg) => {
     message += `   Definition: ${word.definition}\n`;
     message += `   Example: ${word.example}\n\n`;
   });
-  message += `💡 Remember to reply to the prompts today to practice!`;
+  message += `🔔 Reviews due: ${dueCount}\n💡 Reply to prompts today to practice or run /review for due items.`;
   
   await bot.sendMessage(chatId, message, { parse_mode: 'HTML' });
 });
@@ -221,6 +242,8 @@ bot.onText(/\/progress/, async (msg) => {
     .select('id,served_at,word_id,words:word_id(word)')
     .eq('user_id', user.id)
     .order('served_at', { ascending: true });
+  const dueCount = await getDueReviewsCount(user.id);
+  const todayWords = await getTodayWords(user.id);
   
   const wordCount = learned ? learned.length : 0;
   const streak = stat ? stat.streak : 0;
@@ -229,6 +252,8 @@ bot.onText(/\/progress/, async (msg) => {
   text += `📚 Total words learned: <b>${wordCount}</b>\n`;
   text += `🔥 Current streak: <b>${streak} day${streak !== 1 ? 's' : ''}</b>\n`;
   text += `📖 Words per day: <b>${user.words_per_day}</b>\n\n`;
+  text += `🔔 Reviews due now: <b>${dueCount}</b>\n`;
+  text += `📦 Today’s new words: <b>${todayWords.length}</b>\n\n`;
   
   if (learned && learned.length > 0) {
     text += `✨ Recent words:\n`;
@@ -278,7 +303,12 @@ bot.on('message', async (msg) => {
   const todayStart = new Date();
   todayStart.setUTCHours(0, 0, 0, 0);
   const todayISO = todayStart.toISOString();
-  const { data: pending } = await supabase.from('user_words').select('id,word_id,last_response,served_at,words:word_id(word)').eq('user_id', user.id).gte('served_at', todayISO).order('served_at', { ascending: true });
+  // For spaced repetition, review only words served before today
+  const { data: pending } = await supabase.from('user_words')
+    .select('id,word_id,last_response,served_at,words:word_id(word)')
+    .eq('user_id', user.id)
+    .lt('served_at', todayISO)
+    .order('served_at', { ascending: true });
   if (!pending || pending.length === 0) return;
   const shortReply = text.split(' ').length <= 3;
   if (shortReply) {

@@ -1,8 +1,7 @@
 // api/cron/daily.js
-
-import TelegramBot from 'node-telegram-bot-api';
-import supabase from '../../supabaseClient';
-import { InferenceClient } from '@huggingface/inference';
+const TelegramBot = require('node-telegram-bot-api');
+const supabase = require('../../supabaseClient');
+const { InferenceClient } = require('@huggingface/inference');
 
 const TELEGRAM_TOKEN = process.env.TELEGRAM_TOKEN;
 const HF_TOKEN = process.env.HF_API_KEY;
@@ -34,17 +33,54 @@ Return only valid JSON in this exact shape with no extra text:
   "word": "singleword",
   "part_of_speech": "noun|verb|adjective|adverb",
   "definition": "one line definition",
-  "example": "one example sentence using the word"
+  "example": "one short example sentence using the word",
+  "example_2": "a second short example in a different context"
 }
 
-Do not use words previously used.`;
+Do not use words previously used. Prefer practical, non-obscure words people should know.`;
+}
+
+const STARTER_WORDS = [
+  { word: 'serendipity', part_of_speech: 'noun', definition: 'the occurrence of events by chance in a happy way', example: 'Finding that book was pure serendipity.', example_2: 'Their meeting was pure serendipity.' },
+  { word: 'lucid', part_of_speech: 'adjective', definition: 'expressed clearly; easy to understand', example: 'She wrote a lucid explanation.', example_2: 'After a nap, his thoughts felt lucid.' },
+  { word: 'succinct', part_of_speech: 'adjective', definition: 'briefly and clearly expressed', example: 'He gave a succinct summary.', example_2: 'Keep your cover letter succinct.' },
+  { word: 'mirth', part_of_speech: 'noun', definition: 'amusement, especially as expressed in laughter', example: 'The room was full of mirth.', example_2: 'Their mirth was contagious.' },
+  { word: 'diligent', part_of_speech: 'adjective', definition: 'showing care and conscientiousness in work', example: 'Her diligent study paid off.', example_2: 'He is diligent about meeting deadlines.' }
+];
+
+function getStarterWord(avoidList = []) {
+  const avoidLower = new Set(avoidList.map(w => w.toLowerCase()));
+  return STARTER_WORDS.find(w => !avoidLower.has(w.word.toLowerCase())) || null;
+}
+
+async function getReusableWordFromDb(avoidList = []) {
+  const { data, error } = await supabase
+    .from('words')
+    .select('*')
+    .order('created_at', { ascending: false })
+    .limit(50);
+  if (error) {
+    console.warn('Error fetching reusable words:', error);
+    return null;
+  }
+  const avoidLower = new Set(avoidList.map(w => w.toLowerCase()));
+  const candidates = (data || []).filter(w => !avoidLower.has((w.word || '').toLowerCase()));
+  if (!candidates.length) return null;
+  const pick = candidates[Math.floor(Math.random() * candidates.length)];
+  return {
+    word: pick.word,
+    part_of_speech: pick.part_of_speech || '',
+    definition: pick.definition || '',
+    example: pick.example || '',
+    example_2: pick.example_2 || pick.example || ''
+  };
 }
 
 async function generateWithSeed(seed, avoidList = []) {
   try {
     const prompt = `${promptForSeededWord(seed)}${avoidList.length ? "\nAvoid these words: " + JSON.stringify(avoidList.slice(0,200)) : ''}`;
     const response = await hf.textGeneration({
-      model: 'mistralai/Mistral-7B-Instruct-v0.2',
+      model: 'HuggingFaceH4/zephyr-7b-beta',
       inputs: prompt,
       parameters: { max_new_tokens: 64, temperature: 0.9 }
     });
@@ -68,6 +104,10 @@ async function generateWithSeed(seed, avoidList = []) {
 async function generateUniqueWord(avoidList = []) {
   const maxAttempts = 8;
   for (let i = 0; i < maxAttempts; i++) {
+    if (i === 0) {
+      const reusable = await getReusableWordFromDb(avoidList);
+      if (reusable) return reusable;
+    }
     const seed = Math.floor(Math.random() * 1e9) + i;
     const candidate = await generateWithSeed(seed, avoidList);
     if (!candidate || !candidate.word) continue;
@@ -80,7 +120,9 @@ async function generateUniqueWord(avoidList = []) {
 
     if (!existing) return candidate;
   }
-  return null;
+  // Fallback to starter word if generation failed
+  const starter = getStarterWord(avoidList);
+  return starter || null;
 }
 
 async function saveWordAndAssignToUsers(wordObj, servedForUsers = []) {
@@ -117,11 +159,31 @@ async function saveWordAndAssignToUsers(wordObj, servedForUsers = []) {
 }
 
 async function serveWordsToUser(user) {
+  // If user has many due reviews, make it a review-only day
+  const now = Date.now();
+  const { data: dueReviews } = await supabase
+    .from('user_words')
+    .select('id')
+    .eq('user_id', user.id)
+    .lte('next_review', now);
+  if (dueReviews && dueReviews.length >= 5) {
+    await bot.sendMessage(user.chat_id, 'Today is a review day—clear your pending reviews first. Use /review.');
+    return;
+  }
+
+  // If user is new or has very few words, prefer starter set to avoid API calls
+  const { data: learnedWords } = await supabase
+    .from('user_words')
+    .select('id')
+    .eq('user_id', user.id);
+
   const wordsToSend = [];
   const used = await getUsedWords(1000);
 
   for (let i = 0; i < user.words_per_day; i++) {
-    const candidate = await generateUniqueWord(used);
+    const candidate =
+      (learnedWords && learnedWords.length < 3 ? getStarterWord(used) : null) ||
+      await generateUniqueWord(used);
     if (!candidate) continue;
     used.unshift(candidate.word.toLowerCase());
     wordsToSend.push(candidate);
@@ -129,7 +191,7 @@ async function serveWordsToUser(user) {
   }
 
   if (!wordsToSend.length) {
-    await bot.sendMessage(user.chat_id, 'Unable to generate today words. Try again later.');
+    await bot.sendMessage(user.chat_id, 'Light day today—no new words. You can review with /review.');
     return;
   }
 
@@ -137,13 +199,15 @@ async function serveWordsToUser(user) {
   wordsToSend.forEach((w, idx) => {
     text += `${idx + 1}. ${w.word}\n`;
     if (w.part_of_speech) text += `${w.part_of_speech}\n`;
-    text += `Definition: ${w.definition}\nExample: ${w.example}\n\n`;
+    text += `Definition: ${w.definition}\nExample: ${w.example}\n`;
+    if (w.example_2) text += `Example 2: ${w.example_2}\n`;
+    text += `\n`;
   });
   text += 'Reply to the prompts today to practise.';
   await bot.sendMessage(user.chat_id, text);
 }
 
-export default async function handler(req, res) {
+module.exports = async function handler(req, res) {
   if (!bot || !hf) {
     return res.status(500).json({ error: 'Bot or HF not configured' });
   }
