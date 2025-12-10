@@ -80,21 +80,12 @@ async function generateWithSeed(seed, avoidList = []) {
   try {
     const prompt = `${promptForSeededWord(seed)}${avoidList.length ? "\nAvoid these words: " + JSON.stringify(avoidList.slice(0,200)) : ''}`;
     const response = await hf.textGeneration({
-      model: 'HuggingFaceH4/zephyr-7b-beta',
-      inputs: prompt,
-      parameters: { max_new_tokens: 64, temperature: 0.9 }
+      model: 'gpt-4o-mini',
+      prompt: prompt,
+      parameters: { max_new_tokens: 64, temperature: 0.9 },
+      return_full_text: false
     });
-    const text = response.generated_text;
-
-    try {
-      const start = text.indexOf('{');
-      const end = text.lastIndexOf('}');
-      const jsonText = (start !== -1 && end !== -1) ? text.substring(start, end + 1) : text;
-      return JSON.parse(jsonText);
-    } catch (e) {
-      console.warn('Error parsing JSON from HF output:', e, 'raw:', text);
-      return null;
-    }
+    return response.text;
   } catch (error) {
     console.error('Error generating word with HF:', error);
     return null;
