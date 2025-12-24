@@ -64,6 +64,7 @@ function getWelcomeMessage(isNewUser, hasTodayWords) {
     message += `In the meantime, you can:\n`;
     message += `• Use /setwords 1-3 to choose how many words you want daily\n`;
     message += `• Use /help to see all available commands\n\n`;
+    message += `• Use /review to practice older words\n\n`;
   } else {
     message += `${emoji.sparkles} Great news! You can check today's words with /today\n\n`;
   }
