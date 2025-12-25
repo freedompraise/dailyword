@@ -407,7 +407,7 @@ async function handleCallbackQuery(callbackQuery) {
       }
       
       if (subAction === 'show') {
-        // Show definition
+        // Show definition (ETIAD: Once shown, can't test recall - user has seen answer)
         let defText = `**${word.word}**`;
         if (word.pronunciation) defText += ` \`${word.pronunciation}\``;
         if (word.part_of_speech) defText += `\n<i>${word.part_of_speech}</i>`;
@@ -418,13 +418,13 @@ async function handleCallbackQuery(callbackQuery) {
           chat_id: chatId,
           message_id: messageId,
           parse_mode: 'HTML',
-          ...createDefinitionKeyboard(wordId)
+          ...createDefinitionKeyboard(wordId, !!word.example_2)
         });
       } else if (subAction === 'practice' || subAction === 'challenge') {
-        // Start recall challenge
+        // Start recall challenge (from word card, before seeing definition)
         await initiateRecallChallenge(chatId, user.id, wordId);
       } else if (subAction === 'example') {
-        // Show second example
+        // Show second example (if available)
         let exampleText = `**${word.word}**\n\n`;
         if (word.example_2) {
           exampleText += `Example 2: ${word.example_2}`;
@@ -438,7 +438,23 @@ async function handleCallbackQuery(callbackQuery) {
           chat_id: chatId,
           message_id: messageId,
           parse_mode: 'HTML',
-          ...createDefinitionKeyboard(wordId)
+          ...createDefinitionKeyboard(wordId, false) // Don't show "see another" if we're already on example_2
+        });
+      } else if (subAction === 'back') {
+        // Return to word card (without definition)
+        let cardText = `**${word.word}**`;
+        if (word.pronunciation) {
+          cardText += ` \`${word.pronunciation}\``;
+        }
+        if (word.part_of_speech) {
+          cardText += `\n<i>${word.part_of_speech}</i>`;
+        }
+        
+        await bot.editMessageText(cardText, {
+          chat_id: chatId,
+          message_id: messageId,
+          parse_mode: 'HTML',
+          ...createWordCardKeyboard(wordId)
         });
       }
     } else if (action === 'review') {

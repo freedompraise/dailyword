@@ -1,7 +1,12 @@
-// api/cron/review.js - Review job cron (runs hourly)
+// api/cron/review.js - Review reminder cron (runs hourly)
+// Note: Per SYSTEM_REDESIGN.md, this should NOT send prompts that update next_review before user responds
+// Instead, it sends reminders to users with due words to use /review command
+// The actual review happens through structured sessions initiated by /review command
 // Note: dotenv.config() removed - Vercel injects env vars directly
 const TelegramBot = require('node-telegram-bot-api');
 const supabase = require('../../supabaseClient');
+const { getDueWordsCount } = require('../spacedRepetition');
+const { createReviewStartKeyboard } = require('../keyboardUtils');
 
 const TELEGRAM_TOKEN = process.env.TELEGRAM_TOKEN;
 const bot = TELEGRAM_TOKEN ? new TelegramBot(TELEGRAM_TOKEN) : null;
@@ -14,30 +19,33 @@ module.exports = async (req, res) => {
   }
 
   try {
-    const now = new Date().toISOString();
-    const { data: due } = await supabase.from('user_words').select('id,user_id,word_id,interval,next_review').lte('next_review', now);
-    if (!due) {
-      return res.status(200).json({ message: 'No reviews due' });
+    const { data: users } = await supabase.from('users').select('*');
+    if (!users) {
+      return res.status(200).json({ message: 'No users found' });
     }
     
-    for (const row of due) {
+    let remindedCount = 0;
+    
+    for (const u of users) {
       try {
-        const { data: user } = await supabase.from('users').select('*').eq('id', row.user_id).maybeSingle();
-        const { data: word } = await supabase.from('words').select('*').eq('id', row.word_id).maybeSingle();
-        if (!user || !word) continue;
+        // Check if user has due reviews (excluding today's words)
+        const dueCount = await getDueWordsCount(u.id, true);
         
-        await bot.sendMessage(user.chat_id, `Review: do you remember the word "${word.word}"? Reply with it if you do.`);
-        
-        const nextInterval = Math.max(1, Math.round((row.interval || 2) * 2.5));
-        const nextReviewDate = new Date(Date.now() + nextInterval * 24 * 60 * 60 * 1000);
-        const nextReview = nextReviewDate.toISOString();
-        await supabase.from('user_words').update({ interval: nextInterval, next_review: nextReview }).eq('id', row.id);
+        // Only remind users with 3+ due words to avoid spam
+        if (dueCount >= 3) {
+          await bot.sendMessage(
+            u.chat_id,
+            `🔔 You have ${dueCount} word${dueCount !== 1 ? 's' : ''} due for review!\n\nUse /review to start a practice session.`,
+            createReviewStartKeyboard(dueCount, u.review_words_per_session || 3)
+          );
+          remindedCount++;
+        }
       } catch (e) {
-        console.warn('runReviewJob error', e);
+        console.warn('Error sending review reminder to user', u.chat_id, e);
       }
     }
     
-    res.status(200).json({ message: `Review job completed. Processed ${due.length} reviews.` });
+    res.status(200).json({ message: `Review reminder sent to ${remindedCount} users with due words.` });
   } catch (error) {
     console.error('Review cron error:', error);
     res.status(500).json({ error: error.message });

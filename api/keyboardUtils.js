@@ -43,18 +43,25 @@ function createWordCardKeyboard(wordId) {
 /**
  * Create keyboard for word definition view
  * @param {number} wordId - Word ID
+ * @param {boolean} hasSecondExample - Whether word has example_2
  * @returns {Object} Reply markup
  */
-function createDefinitionKeyboard(wordId) {
-  return createInlineKeyboard([
-    [
-      createButton('✅ Got it - test me', `word:challenge:${wordId}`),
+function createDefinitionKeyboard(wordId, hasSecondExample = false) {
+  const buttons = [];
+  
+  // Only show "See another example" if there's a second example
+  if (hasSecondExample) {
+    buttons.push([
       createButton('📝 See another example', `word:example:${wordId}`)
-    ],
-    [
-      createButton('◀️ Back', `word:back:${wordId}`)
-    ]
+    ]);
+  }
+  
+  // Always show back button
+  buttons.push([
+    createButton('◀️ Back to word', `word:back:${wordId}`)
   ]);
+  
+  return createInlineKeyboard(buttons);
 }
 
 /**
