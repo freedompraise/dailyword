@@ -13,7 +13,7 @@ module.exports = async (req, res) => {
         weekly: '/api/cron/weekly'
       },
       admin: {
-        broadcast: '/api/admin/broadcast'
+        broadcast: '/api/admin'
       }
     }
   });

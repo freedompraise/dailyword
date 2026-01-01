@@ -2,7 +2,7 @@
 // Note: dotenv.config() removed - Vercel injects env vars directly
 const TelegramBot = require('node-telegram-bot-api');
 const supabase = require('../../supabaseClient');
-const { getDueWordsCount } = require('../spacedRepetition');
+const { getDueWordsCount } = require('../../lib/spacedRepetition');
 
 const TELEGRAM_TOKEN = process.env.TELEGRAM_TOKEN;
 const bot = TELEGRAM_TOKEN ? new TelegramBot(TELEGRAM_TOKEN) : null;

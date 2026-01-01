@@ -3,17 +3,17 @@
 const TelegramBot = require('node-telegram-bot-api');
 const supabase = require('../supabaseClient');
 const { InferenceClient } = require('@huggingface/inference');
-const { getWelcomeMessage, getHelpMessage, formatTimeUntilNextWord } = require('./utils');
-const sessionManager = require('./sessionManager');
-const { validateAnswer } = require('./answerValidator');
-const { updateWordInterval, getDueWords, getDueWordsCount, getTodayWords } = require('./spacedRepetition');
+const { getWelcomeMessage, getHelpMessage, formatTimeUntilNextWord } = require('../lib/utils');
+const sessionManager = require('../lib/sessionManager');
+const { validateAnswer } = require('../lib/answerValidator');
+const { updateWordInterval, getDueWords, getDueWordsCount, getTodayWords } = require('../lib/spacedRepetition');
 const {
   createWordCardKeyboard,
   createDefinitionKeyboard,
   createChallengeKeyboard,
   createFeedbackKeyboard,
   createReviewStartKeyboard
-} = require('./keyboardUtils');
+} = require('../lib/keyboardUtils');
 
 const TELEGRAM_TOKEN = process.env.TELEGRAM_TOKEN;
 const HF_API_KEY = process.env.HF_API_KEY;
@@ -146,7 +146,7 @@ bot.onText(/\/start/, async (msg) => {
     
     // Status snapshot
     const todayWords = await getTodayWords(user.id);
-    const dueCount = await getDueReviewsCount(user.id);
+    const dueCount = await getDueWordsCount(user.id, true);
     const hasTodayWords = hasReceivedTodayWords(todayWords);
     const status = buildStatusSummary({
       todayCount: todayWords.length,
@@ -197,7 +197,7 @@ bot.onText(/\/today/, async (msg) => {
   }
   
   const userWords = await getTodayWords(user.id);
-  const dueCount = await getDueReviewsCount(user.id);
+  const dueCount = await getDueWordsCount(user.id, true);
   if (!userWords || userWords.length === 0) {
     const timeUntil = formatTimeUntilNextWord();
     await bot.sendMessage(chatId, `📖 You haven't received today's words yet.\n\n⏰ Next drop in ${timeUntil}.\n🔔 Reviews due: ${dueCount}\nTip: run /review to clear due items while you wait.`);
@@ -234,7 +234,7 @@ bot.onText(/\/progress/, async (msg) => {
     .select('id,served_at,word_id,words:word_id(word)')
     .eq('user_id', user.id)
     .order('served_at', { ascending: true });
-  const dueCount = await getDueReviewsCount(user.id);
+  const dueCount = await getDueWordsCount(user.id, true);
   const todayWords = await getTodayWords(user.id);
   
   const wordCount = learned ? learned.length : 0;
@@ -270,20 +270,27 @@ bot.onText(/\/review/, async (msg) => {
     await bot.sendMessage(chatId, '👋 Hi! Please send /start to get started first.');
     return;
   }
-  const dueWords = await getDueWords(user.id, 5);
-  if (!dueWords.length) {
+  
+  // Check for existing session
+  const existingSession = await sessionManager.getActiveSession(user.id);
+  if (existingSession) {
+    await bot.sendMessage(chatId, 'You already have an active review session. Complete it first or use /cancel to end it.');
+    return;
+  }
+  
+  const dueCount = await getDueWordsCount(user.id, true);
+  if (dueCount === 0) {
     await bot.sendMessage(chatId, '✅ No reviews due right now. Check back after your next drop!');
     return;
   }
-  let text = `🔁 Review time! I’ll only quiz older words (not today’s).\n\n`;
-  dueWords.forEach((w, idx) => {
-    text += `${idx + 1}. ${w.words?.word || 'Word'}\n`;
-    text += `   Definition: ${w.words?.definition || 'n/a'}\n`;
-    if (w.words?.example) text += `   Example: ${w.words.example}\n`;
-    text += `\n`;
-  });
-  text += `Reply with a quick sentence using any one of these words. I’ll log it and update your streak.`;
-  await bot.sendMessage(chatId, text, { parse_mode: 'HTML' });
+  
+  // Show review start options (ETIAD-compliant: no definitions shown)
+  const defaultCount = user.review_words_per_session || 3;
+  await bot.sendMessage(
+    chatId,
+    `🔁 Review Session\n\nYou have ${dueCount} word${dueCount !== 1 ? 's' : ''} due for review.\n\nChoose how many words to practice:`,
+    createReviewStartKeyboard(dueCount, defaultCount)
+  );
 });
 
 bot.onText(/\/help/, async (msg) => {

@@ -2,10 +2,11 @@
 const TelegramBot = require('node-telegram-bot-api');
 const supabase = require('../../supabaseClient');
 const { InferenceClient } = require('@huggingface/inference');
-const { createWordCardKeyboard } = require('../keyboardUtils');
+const { createWordCardKeyboard } = require('../../lib/keyboardUtils');
 
 const TELEGRAM_TOKEN = process.env.TELEGRAM_TOKEN;
 const HF_TOKEN = process.env.HF_API_KEY;
+const ADMIN_CHAT_ID = process.env.ADMIN_CHAT_ID || null;
 
 if (!TELEGRAM_TOKEN || !HF_TOKEN) {
   console.error('Missing required environment variables for daily cron');
@@ -13,6 +14,27 @@ if (!TELEGRAM_TOKEN || !HF_TOKEN) {
 
 const bot = TELEGRAM_TOKEN ? new TelegramBot(TELEGRAM_TOKEN) : null;
 const hf = HF_TOKEN ? new InferenceClient(HF_TOKEN) : null;
+
+// Admin alerting function
+async function notifyAdminOfFailure(userId, reason, details = {}) {
+  if (!ADMIN_CHAT_ID || !bot) {
+    console.warn('Admin alerting not configured (ADMIN_CHAT_ID or bot missing)');
+    return;
+  }
+  
+  try {
+    const message = `⚠️ Word Generation Failure\n\n` +
+      `User ID: ${userId}\n` +
+      `Reason: ${reason}\n` +
+      `Details: ${JSON.stringify(details, null, 2)}\n` +
+      `Time: ${new Date().toISOString()}`;
+    
+    await bot.sendMessage(ADMIN_CHAT_ID, message);
+    console.log(`Admin alert sent for user ${userId}`);
+  } catch (error) {
+    console.error('Failed to send admin alert:', error);
+  }
+}
 
 async function getUsedWords(limit = 500) {
   const { data, error } = await supabase
@@ -165,15 +187,25 @@ async function generateWithSeed(seed, avoidList = []) {
   
   try {
     const prompt = `${promptForSeededWord(seed)}${avoidList.length ? "\nAvoid these words: " + JSON.stringify(avoidList.slice(0,200)) : ''}`;
-    const response = await hf.textGeneration({
-      model: 'meta-llama/Llama-3.1-8B-Instruct',
-      inputs: prompt,
-      parameters: { max_new_tokens: 200, temperature: 0.9 },
-      return_full_text: false
+    const response = await hf.chatCompletion({
+      model: 'meta-llama/Llama-3.2-3B-Instruct',
+      messages: [
+        {
+          role: "user",
+          content: prompt
+        }
+      ],
+      max_tokens: 500,
+      temperature: 0.9
     });
     
-    // Parse the response
-    const generatedText = response.generated_text || '';
+    // Parse the response - chatCompletion returns choices[0].message.content
+    const generatedText = response.choices?.[0]?.message?.content || '';
+    if (!generatedText) {
+      console.warn('No content in chatCompletion response:', response);
+      return null;
+    }
+    
     return parseGeneratedCandidate(generatedText);
   } catch (error) {
     console.error('Error generating word with HF:', error);
@@ -308,7 +340,25 @@ async function serveWordsToUser(user) {
   }
 
   if (!wordsToSend.length) {
-    await bot.sendMessage(user.chat_id, '💡 Light day today—no new words. You can review with /review.');
+    // Funny/teaser failure message (Option B)
+    const failureMessages = [
+      "🤖 Oops! My word generator took a coffee break. Your words will arrive tomorrow—promise! In the meantime, flex those brain muscles with /review.",
+      "📚 Plot twist: Today's words are playing hide and seek. They'll show up tomorrow! Until then, /review is your best friend.",
+      "🎭 The words are being dramatic today—they'll make their grand entrance tomorrow. Use /review to keep your streak alive!",
+      "⚡ Quick update: The word factory is rebooting. Fresh words incoming tomorrow! Practice mode: /review",
+      "🔮 The crystal ball says... words tomorrow! Today's a perfect day to /review what you've learned."
+    ];
+    
+    const randomMessage = failureMessages[Math.floor(Math.random() * failureMessages.length)];
+    await bot.sendMessage(user.chat_id, randomMessage);
+    
+    // Alert admin
+    await notifyAdminOfFailure(user.id, 'No words generated', {
+      wordsPerDay: user.words_per_day,
+      attempts: user.words_per_day,
+      chatId: user.chat_id
+    });
+    
     return;
   }
 
@@ -348,15 +398,6 @@ async function serveWordsToUser(user) {
       await new Promise(resolve => setTimeout(resolve, 500));
     }
   }
-  
-  // Send summary message
-  const summaryText = `✨ You've received ${wordsToSend.length} new word${wordsToSend.length > 1 ? 's' : ''}!\n\n` +
-    `💡 Use the buttons above each word to:\n` +
-    `• View the definition\n` +
-    `• Start a practice challenge\n\n` +
-    `Or use /review to practice older words.`;
-  
-  await bot.sendMessage(user.chat_id, summaryText);
 }
 
 module.exports = async function handler(req, res) {

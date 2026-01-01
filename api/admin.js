@@ -1,6 +1,6 @@
-// api/admin/broadcast.js - Admin broadcast endpoint with password auth
+// api/admin.js - Admin router for admin functions (broadcast, etc.)
 const TelegramBot = require('node-telegram-bot-api');
-const supabase = require('../../supabaseClient');
+const supabase = require('../supabaseClient');
 
 const TELEGRAM_TOKEN = process.env.TELEGRAM_TOKEN;
 const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD; // Password from env vars
@@ -182,3 +182,4 @@ module.exports = async (req, res) => {
   // Method not allowed
   return res.status(405).send(getFormHTML('Method not allowed.'));
 };
+
