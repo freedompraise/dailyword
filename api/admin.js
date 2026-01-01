@@ -1,6 +1,7 @@
 // api/admin.js - Admin router for admin functions (broadcast, etc.)
 const TelegramBot = require('node-telegram-bot-api');
 const supabase = require('../supabaseClient');
+const querystring = require('querystring');
 
 const TELEGRAM_TOKEN = process.env.TELEGRAM_TOKEN;
 const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD; // Password from env vars
@@ -94,7 +95,7 @@ const getFormHTML = (error = null, success = null) => `
     <div class="info">
       💡 Enter your password and message below. The message will be sent to all active users.
     </div>
-    <form method="POST">
+    <form method="POST" enctype="application/x-www-form-urlencoded">
       <label for="password">Password:</label>
       <input type="password" id="password" name="password" required autocomplete="off">
       
@@ -124,7 +125,27 @@ module.exports = async (req, res) => {
   
   // POST request: Process broadcast
   if (req.method === 'POST') {
-    const { password, message } = req.body;
+    // Parse form data (application/x-www-form-urlencoded)
+    // Vercel's @vercel/node may parse it automatically, but handle both cases
+    let formData;
+    try {
+      if (typeof req.body === 'string') {
+        // Form data is a URL-encoded string - parse it
+        formData = querystring.parse(req.body);
+      } else if (typeof req.body === 'object' && req.body !== null) {
+        // Already parsed by Vercel (most common case)
+        formData = req.body;
+      } else {
+        console.error('Unexpected body type:', typeof req.body);
+        return res.status(400).send(getFormHTML('Invalid request format.'));
+      }
+    } catch (error) {
+      console.error('Error parsing form data:', error);
+      return res.status(400).send(getFormHTML('Error parsing form data.'));
+    }
+    
+    const password = formData.password;
+    const message = formData.message;
     
     // Verify password
     if (password !== ADMIN_PASSWORD) {

@@ -12,6 +12,10 @@
       "dest": "/api/webhook.js"
     },
     {
+      "src": "/api/admin",
+      "dest": "/api/admin.js"
+    },
+    {
       "src": "/api/cron/daily",
       "dest": "/api/cron/daily.js"
     },
