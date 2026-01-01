@@ -11,6 +11,9 @@ module.exports = async (req, res) => {
         evening: '/api/cron/evening',
         review: '/api/cron/review',
         weekly: '/api/cron/weekly'
+      },
+      admin: {
+        broadcast: '/api/admin/broadcast'
       }
     }
   });
