@@ -25,10 +25,10 @@
         "jest": "^29.7.0"
     },
     "keywords": [
-        "dailyword",
-        "vocab",
-        "telegram",
-        "bot"
+    "dailyword",
+    "vocab",
+    "telegram",
+    "bot"
     ],
     "author": "Dailyword",
     "license": "ISC",

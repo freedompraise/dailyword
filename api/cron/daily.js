@@ -2,7 +2,7 @@
 const TelegramBot = require('node-telegram-bot-api');
 const supabase = require('../../supabaseClient');
 const { InferenceClient } = require('@huggingface/inference');
-const { createWordCardKeyboard } = require('../../lib/keyboardUtils');
+const { createNewWordCardKeyboard } = require('../../lib/keyboardUtils');
 
 const TELEGRAM_TOKEN = process.env.TELEGRAM_TOKEN;
 const HF_TOKEN = process.env.HF_API_KEY;
@@ -54,7 +54,7 @@ Return only valid JSON in this exact shape with no extra text:
 
 {
   "word": "singleword",
-  "pronunciation": "/IPA notation here/",
+  "pronunciation": "phonetic respelling here",
   "part_of_speech": "noun|verb|adjective|adverb",
   "definition": "one line definition",
   "example": "one short example sentence using the word",
@@ -62,7 +62,7 @@ Return only valid JSON in this exact shape with no extra text:
 }
 
 Do not use words previously used. Prefer practical, non-obscure words people should know.
-Provide pronunciation in IPA (International Phonetic Alphabet) notation.`;
+Provide pronunciation as phonetic respelling (e.g., "ser-uhn-DIP-i-tee" for serendipity, not IPA notation).`;
 }
 
 // Get random word from database that user hasn't learned yet
@@ -378,16 +378,16 @@ async function serveWordsToUser(user) {
     
     // Format word card (ETIAD: Exposure only - no definition shown)
     let cardText = `📚 Word ${wordNum} of ${wordsToSend.length}\n\n`;
-    cardText += `**${w.word}**`;
+    cardText += `${w.word}`;
     if (w.pronunciation) {
-      cardText += ` \`${w.pronunciation}\``;
+      cardText += ` (${w.pronunciation})`;
     }
     if (w.part_of_speech) {
       cardText += `\n<i>${w.part_of_speech}</i>`;
     }
     
-    // Send card with buttons
-    const keyboard = wordId ? createWordCardKeyboard(wordId) : undefined;
+    // Send card with buttons (new words only show definition, no practice)
+    const keyboard = wordId ? createNewWordCardKeyboard(wordId) : undefined;
     await bot.sendMessage(user.chat_id, cardText, {
       parse_mode: 'HTML',
       ...(keyboard || {})
