@@ -214,24 +214,20 @@ async function generateWithSeed(seed, avoidList = []) {
 }
 
 async function generateUniqueWord(userId, avoidList = []) {
-  // First, try to get a reusable word from database that user hasn't learned
-  const reusable = await getReusableWordFromDb(avoidList);
-  if (reusable) return reusable;
-  
-  // If user exists, try to get a random word from database they haven't learned
   if (userId) {
     const randomWord = await getRandomWordFromDb(userId, avoidList);
     if (randomWord) return randomWord;
   }
   
-  // Try AI generation (max 3 attempts)
+  const reusable = await getReusableWordFromDb(avoidList);
+  if (reusable) return reusable;
+  
   const maxAttempts = 3;
   for (let i = 0; i < maxAttempts; i++) {
     const seed = Math.floor(Math.random() * 1e9) + i;
     const candidate = await generateWithSeed(seed, avoidList);
     if (!candidate || !candidate.word) continue;
 
-    // Check if word already exists in database
     const { data: existing } = await supabase
       .from('words')
       .select('id')
@@ -241,7 +237,6 @@ async function generateUniqueWord(userId, avoidList = []) {
     if (!existing) return candidate;
   }
   
-  // Final fallback: get any random word from database
   if (userId) {
     const fallbackWord = await getRandomWordFromDb(userId, []);
     if (fallbackWord) return fallbackWord;

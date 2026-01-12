@@ -1,5 +1,3 @@
-// api/webhook.js - Telegram webhook handler
-// Note: dotenv.config() removed - Vercel injects env vars directly
 const TelegramBot = require('node-telegram-bot-api');
 const supabase = require('../supabaseClient');
 const { getWelcomeMessage, getHelpMessage, formatTimeUntilNextWord } = require('../lib/utils');
@@ -18,24 +16,11 @@ const {
 const TELEGRAM_TOKEN = process.env.TELEGRAM_TOKEN;
 const ADMIN_CHAT_ID = process.env.ADMIN_CHAT_ID || null;
 
-// Validate required environment variables
-if (!TELEGRAM_TOKEN) {
-  console.error('Missing required environment variables:', {
-    hasToken: !!TELEGRAM_TOKEN
-  });
-}
-
-// Initialize bot - will fail gracefully if token is missing
 let bot;
-try {
-  if (TELEGRAM_TOKEN) {
-    bot = new TelegramBot(TELEGRAM_TOKEN);
-    console.log('✅ Bot initialized successfully');
-  } else {
-    console.error('❌ TELEGRAM_TOKEN missing - bot not initialized');
-  }
-} catch (error) {
-  console.error('❌ Error initializing bot:', error);
+if (TELEGRAM_TOKEN) {
+  bot = new TelegramBot(TELEGRAM_TOKEN);
+} else {
+  console.error('TELEGRAM_TOKEN missing');
 }
 
 async function ensureUser(chatId) {
@@ -60,13 +45,11 @@ async function ensureUser(chatId) {
     const newUser = newUserData;
     const { error: statsErr } = await supabase.from('user_stats').insert({ user_id: newUser.id, streak: 0, last_completed: null });
     if (statsErr) {
-      console.warn('Error inserting user_stats (non-critical):', statsErr);
-      // Don't throw - user creation succeeded
+      console.warn('Error inserting user_stats:', statsErr);
     }
     return newUser;
   } catch (error) {
     console.error('ensureUser error:', error);
-    // Re-throw with more context
     if (error.message && error.message.includes('fetch failed')) {
       throw new Error('Network error connecting to database. Please try again in a moment.');
     }
@@ -96,9 +79,6 @@ async function updateUserStreak(userId) {
   }
 }
 
-// These functions are now imported from spacedRepetition.js
-// Keeping for backward compatibility if needed, but prefer using imported versions
-
 function buildStatusSummary({ todayCount, dueCount, wordsPerDay }) {
   const parts = [];
   parts.push(`📦 Today: ${todayCount} word${todayCount === 1 ? '' : 's'}`);
@@ -107,20 +87,16 @@ function buildStatusSummary({ todayCount, dueCount, wordsPerDay }) {
   return parts.join(' • ');
 }
 
-// Helper function to safely get message from update
 function getMessageFromUpdate(update) {
   return update.message || update.edited_message || update.channel_post || update.edited_channel_post || null;
 }
 
-// Helper function to safely get chat ID from message
 function getChatId(msg) {
   if (!msg || !msg.chat) return null;
   return msg.chat.id;
 }
 
-// Bot command handlers - only register if bot is initialized
 if (bot) {
-  console.log('📋 Registering bot command handlers...');
   
 bot.onText(/\/start/, async (msg) => {
   if (!msg || !msg.chat) {
@@ -320,38 +296,31 @@ bot.onText(/\/contact/, async (msg) => {
 });
 
 bot.on('message', async (msg) => {
-  // Guard: ensure message and chat exist
   if (!msg || !msg.chat) {
-    console.warn('⚠️ Invalid message in message handler');
+    console.warn('Invalid message in message handler');
     return;
   }
   
   const chatId = msg.chat.id;
   const text = (msg.text || '').trim();
   
-  // Skip command messages (handled by onText handlers)
   if (text.startsWith('/')) {
     return;
   }
   
-  // Skip non-text messages
   if (!text) {
     return;
   }
   
-  console.log('💬 Message received:', { chatId, textLength: text.length, textPreview: text.substring(0, 30) });
   const { data: user } = await supabase.from('users').select('*').eq('chat_id', String(chatId)).maybeSingle();
   if (!user) return;
   
-  // Check if user is sending a contact message
   if (user.pending_contact_message) {
-    // Clear the flag
     await supabase
       .from('users')
       .update({ pending_contact_message: false })
       .eq('id', user.id);
     
-    // Forward message to admin
     if (ADMIN_CHAT_ID) {
       const adminMessage = `📩 Message from user (ID: ${user.id}, Chat: ${chatId}):\n\n${text}`;
       await bot.sendMessage(ADMIN_CHAT_ID, adminMessage);
@@ -362,7 +331,6 @@ bot.on('message', async (msg) => {
     return;
   }
   
-  // Check for /cancel command (in case user wants to cancel contact)
   if (text.toLowerCase() === '/cancel') {
     await supabase
       .from('users')
@@ -444,7 +412,6 @@ async function handleCallbackQuery(callbackQuery) {
   
   try {
     if (action === 'word') {
-      // Word card actions: word:show:id, word:practice:id, word:challenge:id, word:example:id, word:back:id
       const subAction = parts[1];
       const wordId = parseInt(parts[2], 10);
       
@@ -460,7 +427,6 @@ async function handleCallbackQuery(callbackQuery) {
       }
       
       if (subAction === 'show') {
-        // Show definition (ETIAD: Once shown, can't test recall - user has seen answer)
         let defText = `${word.word}`;
         if (word.pronunciation) defText += ` (${word.pronunciation})`;
         if (word.part_of_speech) defText += `\n<i>${word.part_of_speech}</i>`;
@@ -474,10 +440,8 @@ async function handleCallbackQuery(callbackQuery) {
           ...createDefinitionKeyboard(wordId, !!word.example_2)
         });
       } else if (subAction === 'practice' || subAction === 'challenge') {
-        // Start recall challenge (from word card, before seeing definition)
         await initiateRecallChallenge(chatId, user.id, wordId);
       } else if (subAction === 'example') {
-        // Show second example (if available)
         let exampleText = `${word.word}\n\n`;
         if (word.example_2) {
           exampleText += `Example 2: ${word.example_2}`;
@@ -491,10 +455,9 @@ async function handleCallbackQuery(callbackQuery) {
           chat_id: chatId,
           message_id: messageId,
           parse_mode: 'HTML',
-          ...createDefinitionKeyboard(wordId, false) // Don't show "see another" if we're already on example_2
+          ...createDefinitionKeyboard(wordId, false)
         });
       } else if (subAction === 'back') {
-        // Return to word card (without definition)
         let cardText = `${word.word}`;
         if (word.pronunciation) {
           cardText += ` (${word.pronunciation})`;
@@ -511,7 +474,6 @@ async function handleCallbackQuery(callbackQuery) {
         });
       }
     } else if (action === 'review') {
-      // Review session actions: review:start:count, review:list, review:cancel
       const subAction = parts[1];
       
       if (subAction === 'start') {
@@ -533,7 +495,6 @@ async function handleCallbackQuery(callbackQuery) {
         await bot.answerCallbackQuery(callbackQuery.id, { text: 'Review cancelled' });
       }
     } else if (action === 'session') {
-      // Session actions: session:id:next:wordId, session:id:end, session:id:hint:wordId, session:id:skip:wordId
       const sessionId = parts[1];
       const subAction = parts[2];
       
@@ -556,7 +517,6 @@ async function handleCallbackQuery(callbackQuery) {
         await skipWord(chatId, user.id, sessionId, wordId);
       }
     } else if (action === 'challenge') {
-      // Standalone challenge actions: challenge:hint:wordId, challenge:skip:wordId, challenge:cancel:wordId
       const subAction = parts[1];
       const wordId = parseInt(parts[2], 10);
       
@@ -574,7 +534,6 @@ async function handleCallbackQuery(callbackQuery) {
   }
 }
 
-// Process recall answer
 async function processRecallAnswer(chatId, userId, sessionId, wordId, userAnswer) {
   const { data: word } = await supabase
     .from('words')
@@ -587,7 +546,6 @@ async function processRecallAnswer(chatId, userId, sessionId, wordId, userAnswer
     return;
   }
   
-  // Get user_word record
   const { data: userWord } = await supabase
     .from('user_words')
     .select('*')
@@ -600,54 +558,42 @@ async function processRecallAnswer(chatId, userId, sessionId, wordId, userAnswer
     return;
   }
   
-  // Validate answer (use AI for longer answers)
   const useAI = userAnswer.trim().split(/\s+/).length > 5;
   const validation = await validateAnswer(userAnswer, word.word, word.definition || '', useAI);
   const wasCorrect = validation.correct;
   
-  // Update word interval and stats
   await updateWordInterval(userWord.id, wasCorrect);
   
-  // Update user streak if correct
   if (wasCorrect) {
     await updateUserStreak(userId);
   }
   
-  // Get session to check if we should continue
   const session = await sessionManager.getSessionById(sessionId);
   if (!session) {
-    // Standalone challenge - just show feedback
     await sendChallengeFeedback(chatId, word, wasCorrect, validation);
     return;
   }
   
-  // Update session progress
   await sessionManager.updateSessionProgress(sessionId, session.current_index, {
     word_id: wordId,
     was_correct: wasCorrect,
     answered_at: new Date().toISOString()
   });
   
-  // Show feedback and auto-advance to next word
   const nextIndex = (session.current_index || 0) + 1;
   const totalWords = session.word_ids.length;
   const currentWordNum = session.current_index + 1;
+  const nextWordId = nextIndex < session.word_ids.length ? session.word_ids[nextIndex] : null;
+  
+  await sendChallengeFeedback(chatId, word, wasCorrect, validation, sessionId, nextWordId, currentWordNum, totalWords);
   
   if (nextIndex >= session.word_ids.length) {
-    // Last word - show feedback then end session
-    await sendChallengeFeedback(chatId, word, wasCorrect, validation, sessionId, null, currentWordNum, totalWords);
-    setTimeout(() => endReviewSession(chatId, userId, sessionId), 2500);
+    setTimeout(() => endReviewSession(chatId, userId, sessionId), 2000);
   } else {
-    // Not last word - show feedback then auto-advance
-    const nextWordId = session.word_ids[nextIndex];
-    await sendChallengeFeedback(chatId, word, wasCorrect, validation, sessionId, nextWordId, currentWordNum, totalWords);
-    // Update session index and continue automatically
     await sessionManager.updateSessionProgress(sessionId, nextIndex);
-    setTimeout(() => continueReviewSession(chatId, userId, sessionId, nextWordId), 2500);
   }
 }
 
-// Send feedback for a challenge
 async function sendChallengeFeedback(chatId, word, wasCorrect, validation, sessionId = null, nextWordId = null, currentWordNum = null, totalWords = null) {
   let feedbackText = '';
   
@@ -658,12 +604,8 @@ async function sendChallengeFeedback(chatId, word, wasCorrect, validation, sessi
       feedbackText += `Pronunciation: ${word.pronunciation}\n`;
     }
     
-    // Show progress if in session
     if (sessionId && currentWordNum && totalWords) {
       feedbackText += `\n(${currentWordNum}/${totalWords} complete)`;
-      if (nextWordId) {
-        feedbackText += `\n\nNext challenge in 2 seconds...`;
-      }
     } else {
       feedbackText += `\nYou'll see this again based on your spaced repetition schedule.`;
     }
@@ -678,24 +620,18 @@ async function sendChallengeFeedback(chatId, word, wasCorrect, validation, sessi
       feedbackText += `Example: ${word.example}\n`;
     }
     
-    // Show progress if in session
     if (sessionId && currentWordNum && totalWords) {
       feedbackText += `\n(${currentWordNum}/${totalWords} complete)`;
-      if (nextWordId) {
-        feedbackText += `\n\nNext challenge in 2 seconds...`;
-      }
     } else {
       feedbackText += `\nI'll ask you again soon to help it stick.`;
     }
   }
   
-  // Only show buttons if not auto-advancing (standalone challenge or session complete)
-  const keyboard = (sessionId && !nextWordId) ? createFeedbackKeyboard(wasCorrect, sessionId, null) : 
-                   (!sessionId) ? createFeedbackKeyboard(wasCorrect, null, null) : null;
+  const keyboard = createFeedbackKeyboard(wasCorrect, sessionId, nextWordId);
   
   await bot.sendMessage(chatId, feedbackText, { 
     parse_mode: 'HTML',
-    ...(keyboard || {})
+    ...keyboard
   });
 }
 
@@ -712,14 +648,11 @@ async function initiateRecallChallenge(chatId, userId, wordId) {
     return;
   }
   
-  // Create a challenge session
   const session = await sessionManager.createSession(userId, 'challenge', [wordId]);
   
-  // Send challenge message
   let challengeText = `🧠 Recall Challenge\n\n`;
   challengeText += `Definition: ${word.definition}\n`;
   if (word.example) {
-    // Replace word with [???] in example
     const exampleWithBlank = word.example.replace(new RegExp(word.word, 'gi'), '[???]');
     challengeText += `Example: ${exampleWithBlank}\n`;
   }
@@ -731,31 +664,25 @@ async function initiateRecallChallenge(chatId, userId, wordId) {
   });
 }
 
-// Start a review session
 async function startReviewSession(chatId, userId, wordCount) {
-  // Check for existing session
   const existingSession = await sessionManager.getActiveSession(userId);
   if (existingSession) {
     await bot.sendMessage(chatId, 'You already have an active review session. Complete it first or use /cancel to end it.');
     return;
   }
   
-  // Get due words
   const dueWords = await getDueWords(userId, wordCount, true);
   if (dueWords.length === 0) {
     await bot.sendMessage(chatId, '✅ No words due for review right now. Check back later!');
     return;
   }
   
-  // Create session
   const wordIds = dueWords.map(uw => uw.word_id);
   const session = await sessionManager.createSession(userId, 'review', wordIds);
   
-  // Start first challenge
   await continueReviewSession(chatId, userId, session.id, wordIds[0]);
 }
 
-// Continue review session with next word
 async function continueReviewSession(chatId, userId, sessionId, wordId) {
   const session = await sessionManager.getSessionById(sessionId);
   if (!session || session.user_id !== userId) {

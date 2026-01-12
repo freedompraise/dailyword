@@ -5,7 +5,7 @@ on:
     - cron: "0 8 * * *"
     - cron: "0 12 * * *"
     - cron: "0 20 * * *"
-    - cron: "0 * * * *"
+    - cron: "0 10,14,18 * * *"
     - cron: "0 20 * * 0"
   workflow_dispatch:
     inputs:
@@ -46,7 +46,7 @@ jobs:
           curl -sS -X POST "${{ secrets.VERCEL_URL }}/api/cron/evening"
 
   review:
-    if: github.event.schedule == '0 * * * *' || (github.event_name == 'workflow_dispatch' && github.event.inputs.job == 'review')
+    if: (github.event.schedule == '0 10 * * *' || github.event.schedule == '0 14 * * *' || github.event.schedule == '0 18 * * *') || (github.event_name == 'workflow_dispatch' && github.event.inputs.job == 'review')
     runs-on: ubuntu-latest
     steps:
       - name: Trigger Review Job
