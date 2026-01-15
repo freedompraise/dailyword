@@ -76,6 +76,10 @@ See [DEPLOYMENT.md](./DEPLOYMENT.md) for detailed deployment instructions.
 - **Database**: Supabase for user data, words, and progress tracking
 - **AI**: Google Gemini for generating unique vocabulary words
 
+![Uploading image.png…]()
+
+
+
 ## Important Notes
 
 ✅ **GitHub Actions** are used for cron jobs (free for public repos). See DEPLOYMENT.md for setup.
@@ -89,6 +93,7 @@ See [DEPLOYMENT.md](./DEPLOYMENT.md) for detailed deployment instructions.
 - Improved progress tracking with visual feedback
 
 ⚠️ All cron schedules in `.github/workflows/cron.yml` are in **UTC timezone**. Adjust if needed for your timezone.
+
 
 ## License
 
