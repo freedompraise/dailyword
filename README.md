@@ -76,7 +76,8 @@ See [DEPLOYMENT.md](./DEPLOYMENT.md) for detailed deployment instructions.
 - **Database**: Supabase for user data, words, and progress tracking
 - **AI**: Google Gemini for generating unique vocabulary words
 
-![Uploading image.png…]()
+<img width="1536" height="1024" alt="image" src="https://github.com/user-attachments/assets/665ba545-ccdd-4670-aa5b-2f1da1f6927c" />
+
 
 
 
