@@ -1,6 +1,7 @@
 const TelegramBot = require('node-telegram-bot-api');
 const supabase = require('../supabaseClient');
-const { getWelcomeMessage, getHelpMessage, formatTimeUntilNextWord } = require('../lib/utils');
+const { getWelcomeMessage, getHelpMessage, formatTimeUntilNextWord, hasReceivedTodayWords, getFriendlyResponse } = require('../lib/utils');
+const { getUserByChatId, ensureUser, getUserById } = require('../lib/userUtils');
 const sessionManager = require('../lib/sessionManager');
 const { validateAnswer } = require('../lib/answerValidator');
 const { updateWordInterval, getDueWords, getDueWordsCount, getTodayWords } = require('../lib/spacedRepetition');
@@ -23,39 +24,6 @@ if (TELEGRAM_TOKEN) {
   console.error('TELEGRAM_TOKEN missing');
 }
 
-async function ensureUser(chatId) {
-  try {
-    const now = new Date().toISOString();
-    const { data, error } = await supabase.from('users').select('*').eq('chat_id', String(chatId)).maybeSingle();
-    if (error) {
-      console.error('Error fetching user:', error);
-      throw new Error(`Database error: ${error.message || 'Failed to fetch user'}`);
-    }
-    if (data) return data;
-    
-    const { data: newUserData, error: insertErr } = await supabase.from('users').insert({ chat_id: String(chatId), words_per_day: 1, created_at: now }).select().single();
-    if (insertErr) {
-      console.error('Error inserting user:', insertErr);
-      throw new Error(`Database error: ${insertErr.message || 'Failed to create user'}`);
-    }
-    if (!newUserData) {
-      throw new Error('Failed to create user - no data returned');
-    }
-    
-    const newUser = newUserData;
-    const { error: statsErr } = await supabase.from('user_stats').insert({ user_id: newUser.id, streak: 0, last_completed: null });
-    if (statsErr) {
-      console.warn('Error inserting user_stats:', statsErr);
-    }
-    return newUser;
-  } catch (error) {
-    console.error('ensureUser error:', error);
-    if (error.message && error.message.includes('fetch failed')) {
-      throw new Error('Network error connecting to database. Please try again in a moment.');
-    }
-    throw error;
-  }
-}
 
 async function updateUserStreak(userId) {
   const now = new Date();
@@ -96,296 +64,7 @@ function getChatId(msg) {
   return msg.chat.id;
 }
 
-if (bot) {
-  
-bot.onText(/\/start/, async (msg) => {
-  if (!msg || !msg.chat) {
-    console.warn('⚠️ Invalid message in /start handler');
-    return;
-  }
-  const chatId = msg.chat.id;
-  console.log('📝 /start command received from chatId:', chatId);
-  try {
-    // Check if user already exists
-    const { data: existingUser } = await supabase.from('users').select('*').eq('chat_id', String(chatId)).maybeSingle();
-    const isNewUser = !existingUser;
-    
-    const user = await ensureUser(chatId);
-    
-    // Status snapshot
-    const todayWords = await getTodayWords(user.id);
-    const dueCount = await getDueWordsCount(user.id, true);
-    const hasTodayWords = hasReceivedTodayWords(todayWords);
-    const status = buildStatusSummary({
-      todayCount: todayWords.length,
-      dueCount,
-      wordsPerDay: user.words_per_day || 1
-    });
-    const welcomeMsg = getWelcomeMessage(isNewUser, hasTodayWords);
-    const plan = `\n\n${status}\n\nNext steps:\n• Use /today to see today’s words\n• Use /review to clear reviews (due: ${dueCount})\n• Use /help for commands`;
-    
-    await bot.sendMessage(chatId, welcomeMsg + plan, { parse_mode: 'HTML' });
-    
-    if (isNewUser && ADMIN_CHAT_ID) {
-      await bot.sendMessage(ADMIN_CHAT_ID, `🎉 New user started: ${chatId}`);
-    }
-  } catch (e) {
-    console.error('Error in /start', e);
-    await bot.sendMessage(chatId, '😔 Oops! Something went wrong. Please try again in a moment.');
-  }
-});
-
-bot.onText(/\/setwords (1|2|3)/, async (msg, match) => {
-  if (!msg || !msg.chat) {
-    console.warn('Invalid message in /setwords handler');
-    return;
-  }
-  const chatId = msg.chat.id;
-  const num = parseInt(match[1], 10);
-  const { data: user } = await supabase.from('users').select('*').eq('chat_id', String(chatId)).maybeSingle();
-  if (!user) {
-    await bot.sendMessage(chatId, '👋 Hi! Please send /start to get started first.');
-    return;
-  }
-  await supabase.from('users').update({ words_per_day: num }).eq('id', user.id);
-  const emoji = num === 1 ? '📖' : num === 2 ? '📚' : '📚📚📚';
-  await bot.sendMessage(chatId, `${emoji} Perfect! I'll send you ${num} word${num > 1 ? 's' : ''} every day.\n\nThis will take effect from tomorrow's delivery!`);
-});
-
-bot.onText(/\/today/, async (msg) => {
-  if (!msg || !msg.chat) {
-    console.warn('Invalid message in /today handler');
-    return;
-  }
-  const chatId = msg.chat.id;
-  const { data: user } = await supabase.from('users').select('*').eq('chat_id', String(chatId)).maybeSingle();
-  if (!user) {
-    await bot.sendMessage(chatId, '👋 Hi! Please send /start to get started first.');
-    return;
-  }
-  
-  const userWords = await getTodayWords(user.id);
-  const dueCount = await getDueWordsCount(user.id, true);
-  if (!userWords || userWords.length === 0) {
-    const timeUntil = formatTimeUntilNextWord();
-    await bot.sendMessage(chatId, `📖 You haven't received today's words yet.\n\n⏰ Next drop in ${timeUntil}.\n🔔 Reviews due: ${dueCount}\nTip: run /review to clear due items while you wait.`);
-    return;
-  }
-  
-  let message = `📚 Today's Words (${userWords.length}):\n\n`;
-  userWords.forEach((uw, idx) => {
-    const word = uw.words || {};
-    message += `${idx + 1}. <b>${word.word}</b>\n`;
-    if (word.part_of_speech) message += `   <i>${word.part_of_speech}</i>\n`;
-    message += `   Definition: ${word.definition}\n`;
-    message += `   Example: ${word.example}\n\n`;
-  });
-  message += `🔔 Reviews due: ${dueCount}\n💡 Want to practice? Send a short sentence using any word above, or run /review for older words.`;
-  
-  await bot.sendMessage(chatId, message, { parse_mode: 'HTML' });
-});
-
-bot.onText(/\/progress/, async (msg) => {
-  if (!msg || !msg.chat) {
-    console.warn('Invalid message in /progress handler');
-    return;
-  }
-  const chatId = msg.chat.id;
-  const { data: user } = await supabase.from('users').select('*').eq('chat_id', String(chatId)).maybeSingle();
-  if (!user) {
-    await bot.sendMessage(chatId, '👋 Hi! Please send /start to get started first.');
-    return;
-  }
-  
-  const { data: stat } = await supabase.from('user_stats').select('*').eq('user_id', user.id).maybeSingle();
-  const { data: learned } = await supabase.from('user_words')
-    .select('id,served_at,word_id,words:word_id(word)')
-    .eq('user_id', user.id)
-    .order('served_at', { ascending: true });
-  const dueCount = await getDueWordsCount(user.id, true);
-  const todayWords = await getTodayWords(user.id);
-  
-  const wordCount = learned ? learned.length : 0;
-  const streak = stat ? stat.streak : 0;
-  
-  let text = `📊 Your Learning Progress\n\n`;
-  text += `📚 Total words learned: <b>${wordCount}</b>\n`;
-  text += `🔥 Current streak: <b>${streak} day${streak !== 1 ? 's' : ''}</b>\n`;
-  text += `📖 Words per day: <b>${user.words_per_day}</b>\n`;
-  text += `🔔 Reviews due now: <b>${dueCount}</b>\n`;
-  text += `📦 Today’s new words: <b>${todayWords.length}</b>\n\n`;
-  
-  if (learned && learned.length > 0) {
-    text += `✨ Recent words:\n`;
-    learned.slice(-10).reverse().forEach((l, idx) => {
-      text += `${idx + 1}. ${l.words?.word || 'N/A'}\n`;
-    });
-  } else {
-    text += `💡 Start learning! Your first words are coming soon!`;
-  }
-  
-  await bot.sendMessage(chatId, text, { parse_mode: 'HTML' });
-});
-
-bot.onText(/\/review/, async (msg) => {
-  if (!msg || !msg.chat) {
-    console.warn('Invalid message in /review handler');
-    return;
-  }
-  const chatId = msg.chat.id;
-  const { data: user } = await supabase.from('users').select('*').eq('chat_id', String(chatId)).maybeSingle();
-  if (!user) {
-    await bot.sendMessage(chatId, '👋 Hi! Please send /start to get started first.');
-    return;
-  }
-  
-  // Check for existing session
-  const existingSession = await sessionManager.getActiveSession(user.id);
-  if (existingSession) {
-    await bot.sendMessage(chatId, 'You already have an active review session. Complete it first or use /cancel to end it.');
-    return;
-  }
-  
-  const dueCount = await getDueWordsCount(user.id, true);
-  if (dueCount === 0) {
-    await bot.sendMessage(chatId, '✅ No reviews due right now. Check back after your next drop!');
-    return;
-  }
-  
-  // Show review start options (ETIAD-compliant: no definitions shown)
-  const defaultCount = user.review_words_per_session || 3;
-  await bot.sendMessage(
-    chatId,
-    `🔁 Review Session\n\nYou have ${dueCount} word${dueCount !== 1 ? 's' : ''} due for review.\n\nChoose how many words to practice:`,
-    createReviewStartKeyboard(dueCount, defaultCount)
-  );
-});
-
-bot.onText(/\/help/, async (msg) => {
-  if (!msg || !msg.chat) {
-    console.warn('Invalid message in /help handler');
-    return;
-  }
-  const chatId = msg.chat.id;
-  const helpMsg = getHelpMessage();
-  await bot.sendMessage(chatId, helpMsg);
-});
-
-bot.onText(/\/contact/, async (msg) => {
-  if (!msg || !msg.chat) {
-    console.warn('Invalid message in /contact handler');
-    return;
-  }
-  const chatId = msg.chat.id;
-  const { data: user } = await supabase.from('users').select('*').eq('chat_id', String(chatId)).maybeSingle();
-  if (!user) {
-    await bot.sendMessage(chatId, '👋 Hi! Please send /start to get started first.');
-    return;
-  }
-  
-  // Set flag that user wants to send admin message
-  await supabase
-    .from('users')
-    .update({ pending_contact_message: true })
-    .eq('id', user.id);
-  
-  await bot.sendMessage(
-    chatId,
-    '💬 Send your message below and I\'ll forward it to the admin.\n\nType /cancel to cancel.'
-  );
-});
-
-bot.on('message', async (msg) => {
-  if (!msg || !msg.chat) {
-    console.warn('Invalid message in message handler');
-    return;
-  }
-  
-  const chatId = msg.chat.id;
-  const text = (msg.text || '').trim();
-  
-  if (text.startsWith('/')) {
-    return;
-  }
-  
-  if (!text) {
-    return;
-  }
-  
-  const { data: user } = await supabase.from('users').select('*').eq('chat_id', String(chatId)).maybeSingle();
-  if (!user) return;
-  
-  if (user.pending_contact_message) {
-    await supabase
-      .from('users')
-      .update({ pending_contact_message: false })
-      .eq('id', user.id);
-    
-    if (ADMIN_CHAT_ID) {
-      const adminMessage = `📩 Message from user (ID: ${user.id}, Chat: ${chatId}):\n\n${text}`;
-      await bot.sendMessage(ADMIN_CHAT_ID, adminMessage);
-      await bot.sendMessage(chatId, '✅ Your message has been sent to the admin. Thank you!');
-    } else {
-      await bot.sendMessage(chatId, '❌ Admin contact is not configured. Sorry for the inconvenience.');
-    }
-    return;
-  }
-  
-  if (text.toLowerCase() === '/cancel') {
-    await supabase
-      .from('users')
-      .update({ pending_contact_message: false })
-      .eq('id', user.id);
-    await bot.sendMessage(chatId, 'Cancelled.');
-    return;
-  }
-  
-  const todayStart = new Date();
-  todayStart.setUTCHours(0, 0, 0, 0);
-  const todayISO = todayStart.toISOString();
-  // For spaced repetition, review only words served before today
-  const { data: pending } = await supabase.from('user_words')
-    .select('id,word_id,last_response,served_at,words:word_id(word)')
-    .eq('user_id', user.id)
-    .lt('served_at', todayISO)
-    .order('served_at', { ascending: true });
-
-  // If message arrives when nothing is pending, offer gentle guidance
-  if (!pending || pending.length === 0) {
-    await bot.sendMessage(chatId, 'No reviews due right now. You can check today’s words with /today or wait for the next drop.');
-    return;
-  }
-  const shortReply = text.split(' ').length <= 3;
-  if (shortReply) {
-    const lastPending = pending[pending.length - 1];
-    const expected = (lastPending.words && lastPending.words.word) || '';
-    const isCorrect = text.toLowerCase().includes(expected.toLowerCase());
-    
-    if (isCorrect) {
-      await supabase.from('user_words').update({ correct_count: (lastPending.correct_count || 0) + 1 }).eq('id', lastPending.id);
-      const response = getFriendlyResponse(true, expected);
-      await bot.sendMessage(chatId, response);
-    } else {
-      await supabase.from('user_words').update({ last_response: text }).eq('id', lastPending.id);
-      const response = getFriendlyResponse(false, expected);
-      await bot.sendMessage(chatId, response);
-    }
-    return;
-  }
-  for (const p of pending) {
-    if (!p.last_response) {
-      await supabase.from('user_words').update({ last_response: text }).eq('id', p.id);
-    }
-  }
-  await bot.sendMessage(chatId, '✨ Great! Your usage has been saved and your streak has been updated. Keep up the excellent work! 💪');
-  try {
-    await updateUserStreak(user.id);
-  } catch (e) {
-    console.warn('updateUserStreak error', e);
-  }
-});
-
-} else {
+if (!bot) {
   console.error('❌ Bot not initialized - handlers not registered');
 }
 
@@ -400,7 +79,7 @@ async function handleCallbackQuery(callbackQuery) {
   console.log('🔘 Processing callback:', data);
   
   // Get user
-  const { data: user } = await supabase.from('users').select('*').eq('chat_id', String(chatId)).maybeSingle();
+  const user = await getUserByChatId(chatId);
   if (!user) {
     await bot.sendMessage(chatId, '👋 Hi! Please send /start to get started first.');
     return;
@@ -763,7 +442,7 @@ async function endReviewSession(chatId, userId, sessionId) {
   const session = await sessionManager.getSessionById(sessionId);
   if (!session) return;
   
-  const { data: user } = await supabase.from('users').select('*').eq('id', userId).maybeSingle();
+  const user = await getUserById(userId);
   if (!user) return;
   
   const results = session.results || [];
@@ -900,20 +579,17 @@ module.exports = async (req, res) => {
         messageId: message.message_id
       });
       
-      // Manually route to handlers (processUpdate doesn't work reliably in serverless)
-      // This ensures handlers fire correctly in Vercel
+      // Route message to appropriate handler (onText handlers don't work reliably in serverless)
+      // Using manual routing ensures handlers fire correctly in Vercel
       try {
         const text = (message.text || '').trim();
         const chatId = message.chat.id;
         
         // Route commands manually
         if (text === '/start') {
-          console.log('🔀 Routing to /start handler');
-          // Manually call the start handler logic
           try {
-            const { data: existingUser } = await supabase.from('users').select('*').eq('chat_id', String(chatId)).maybeSingle();
+            const existingUser = await getUserByChatId(chatId, false);
             const isNewUser = !existingUser;
-            
             const user = await ensureUser(chatId);
             
             const todayStart = new Date();
@@ -932,16 +608,14 @@ module.exports = async (req, res) => {
             if (isNewUser && ADMIN_CHAT_ID) {
               await bot.sendMessage(ADMIN_CHAT_ID, `🎉 New user started: ${chatId}`);
             }
-            console.log('✅ /start handler completed');
           } catch (e) {
             console.error('❌ Error in /start handler:', e);
             await bot.sendMessage(chatId, '😔 Oops! Something went wrong. Please try again in a moment.');
           }
         } else if (text.match(/^\/setwords (1|2|3)$/)) {
-          console.log('🔀 Routing to /setwords handler');
           const match = text.match(/^\/setwords (1|2|3)$/);
           const num = parseInt(match[1], 10);
-          const { data: user } = await supabase.from('users').select('*').eq('chat_id', String(chatId)).maybeSingle();
+          const user = await getUserByChatId(chatId);
           if (!user) {
             await bot.sendMessage(chatId, '👋 Hi! Please send /start to get started first.');
           } else {
@@ -949,15 +623,13 @@ module.exports = async (req, res) => {
             const emoji = num === 1 ? '📖' : num === 2 ? '📚' : '📚📚📚';
             await bot.sendMessage(chatId, `${emoji} Perfect! I'll send you ${num} word${num > 1 ? 's' : ''} every day.\n\nThis will take effect from tomorrow's delivery!`);
           }
-          console.log('✅ /setwords handler completed');
         } else if (text.match(/^\/setreview (\d+)$/)) {
-          console.log('🔀 Routing to /setreview handler');
           const match = text.match(/^\/setreview (\d+)$/);
           const num = parseInt(match[1], 10);
           if (num < 1 || num > 20) {
             await bot.sendMessage(chatId, 'Please enter a number between 1 and 20 for review words per session.');
           } else {
-            const { data: user } = await supabase.from('users').select('*').eq('chat_id', String(chatId)).maybeSingle();
+            const user = await getUserByChatId(chatId);
             if (!user) {
               await bot.sendMessage(chatId, '👋 Hi! Please send /start to get started first.');
             } else {
@@ -965,10 +637,8 @@ module.exports = async (req, res) => {
               await bot.sendMessage(chatId, `⚙️ Perfect! Your review sessions will now include ${num} word${num > 1 ? 's' : ''} by default.`);
             }
           }
-          console.log('✅ /setreview handler completed');
         } else if (text === '/today') {
-          console.log('🔀 Routing to /today handler');
-          const { data: user } = await supabase.from('users').select('*').eq('chat_id', String(chatId)).maybeSingle();
+          const user = await getUserByChatId(chatId);
           if (!user) {
             await bot.sendMessage(chatId, '👋 Hi! Please send /start to get started first.');
           } else {
@@ -994,10 +664,8 @@ module.exports = async (req, res) => {
               await bot.sendMessage(chatId, message, { parse_mode: 'HTML' });
             }
           }
-          console.log('✅ /today handler completed');
         } else if (text === '/progress') {
-          console.log('🔀 Routing to /progress handler');
-          const { data: user } = await supabase.from('users').select('*').eq('chat_id', String(chatId)).maybeSingle();
+          const user = await getUserByChatId(chatId);
           if (!user) {
             await bot.sendMessage(chatId, '👋 Hi! Please send /start to get started first.');
           } else {
@@ -1031,19 +699,14 @@ module.exports = async (req, res) => {
             
             await bot.sendMessage(chatId, text, { parse_mode: 'HTML' });
           }
-          console.log('✅ /progress handler completed');
         } else if (text === '/help') {
-          console.log('🔀 Routing to /help handler');
           const helpMsg = getHelpMessage();
           await bot.sendMessage(chatId, helpMsg);
-          console.log('✅ /help handler completed');
         } else if (text === '/contact') {
-          console.log('🔀 Routing to /contact handler');
-          const { data: user } = await supabase.from('users').select('*').eq('chat_id', String(chatId)).maybeSingle();
+          const user = await getUserByChatId(chatId);
           if (!user) {
             await bot.sendMessage(chatId, '👋 Hi! Please send /start to get started first.');
           } else {
-            // Set flag that user wants to send admin message
             await supabase
               .from('users')
               .update({ pending_contact_message: true })
@@ -1054,14 +717,11 @@ module.exports = async (req, res) => {
               '💬 Send your message below and I\'ll forward it to the admin.\n\nType /cancel to cancel.'
             );
           }
-          console.log('✅ /contact handler completed');
         } else if (text === '/review') {
-          console.log('🔀 Routing to /review handler');
-          const { data: user } = await supabase.from('users').select('*').eq('chat_id', String(chatId)).maybeSingle();
+          const user = await getUserByChatId(chatId);
           if (!user) {
             await bot.sendMessage(chatId, '👋 Hi! Please send /start to get started first.');
           } else {
-            // Check for existing session
             const existingSession = await sessionManager.getActiveSession(user.id);
             if (existingSession) {
               await bot.sendMessage(chatId, 'You already have an active review session. Complete it first or use /cancel to end it.');
@@ -1078,11 +738,9 @@ module.exports = async (req, res) => {
               }
             }
           }
-          console.log('✅ /review handler completed');
         } else if (text && !text.startsWith('/')) {
           // Regular message - handle it
-          console.log('🔀 Routing to message handler');
-          const { data: user } = await supabase.from('users').select('*').eq('chat_id', String(chatId)).maybeSingle();
+          const user = await getUserByChatId(chatId);
           if (!user) {
             await bot.sendMessage(chatId, '👋 Hi! Please send /start to get started first.');
             return;
@@ -1090,13 +748,11 @@ module.exports = async (req, res) => {
           
           // Check if user is sending a contact message
           if (user.pending_contact_message) {
-            // Clear the flag
             await supabase
               .from('users')
               .update({ pending_contact_message: false })
               .eq('id', user.id);
             
-            // Forward message to admin
             if (ADMIN_CHAT_ID) {
               const adminMessage = `📩 Message from user (ID: ${user.id}, Chat: ${chatId}):\n\n${text}`;
               await bot.sendMessage(ADMIN_CHAT_ID, adminMessage);
@@ -1120,7 +776,6 @@ module.exports = async (req, res) => {
           // Check for active session first
           const activeSession = await sessionManager.getActiveSession(user.id);
           if (activeSession) {
-            // User is in a review/challenge session - process as answer
             const currentWordId = sessionManager.getCurrentWordId(activeSession);
             if (currentWordId) {
               await processRecallAnswer(chatId, user.id, activeSession.id, currentWordId, text);
@@ -1131,7 +786,6 @@ module.exports = async (req, res) => {
             // No active session - check if message matches any due word (unsolicited recall)
             const dueWords = await getDueWords(user.id, 5, true);
             if (dueWords.length > 0) {
-              // Try to match to first due word
               const firstDue = dueWords[0];
               const word = firstDue.words;
               if (word) {
@@ -1148,12 +802,7 @@ module.exports = async (req, res) => {
               await bot.sendMessage(chatId, `💡 No active challenge. Use /review to start a review session, or /today to see today's words.`);
             }
           }
-          console.log('✅ Message handler completed');
-        } else {
-          console.log('⚠️ Unhandled message type or empty text');
         }
-        
-        console.log('✅ Successfully processed update');
       } catch (processError) {
         // If processing fails, log but don't crash
         console.error('❌ Error processing update:', {

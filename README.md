@@ -78,7 +78,7 @@ See [DEPLOYMENT.md](./DEPLOYMENT.md) for detailed deployment instructions.
 
 <img width="1536" height="1024" alt="image" src="https://github.com/user-attachments/assets/665ba545-ccdd-4670-aa5b-2f1da1f6927c" />
 
-
+Get more details in the [docs/DESIGN.md] file
 
 
 ## Important Notes
