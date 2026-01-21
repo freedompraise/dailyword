@@ -75,10 +75,16 @@ async function getAvailableWordsFromDb(userId, avoidList = []) {
   let learnedWordIds = []
 
   if (userId) {
-    const { data } = await supabase
+    const { data, error } = await supabase
       .from('user_words')
       .select('word_id')
       .eq('user_id', userId)
+
+    if (error) {
+      console.error('Error fetching user words:', error)
+      return null
+    }
+
     learnedWordIds = data ? data.map(r => r.word_id) : []
   }
 
@@ -92,7 +98,12 @@ async function getAvailableWordsFromDb(userId, avoidList = []) {
     query = query.not('id', 'in', `(${learnedWordIds.join(',')})`)
   }
 
-  const { data } = await query
+  const { data, error } = await query
+  if (error) {
+    console.error('Error fetching available words:', error)
+    return null
+  }
+
   if (!data || !data.length) return null
 
   const candidates = data.filter(w => !avoidLower.has((w.word || '').toLowerCase()))
@@ -162,11 +173,17 @@ async function generateWithSeed(seed, avoidList = []) {
 
 async function wordExists(word) {
   if (!word) return false
-  const { data } = await supabase
+  const { data, error } = await supabase
     .from('words')
     .select('id')
     .ilike('word', word.trim())
     .maybeSingle()
+
+  if (error) {
+    console.error('Error checking word existence:', error)
+    return false
+  }
+
   return !!data
 }
 
@@ -185,8 +202,11 @@ async function generateUniqueWord(userId, avoidList = []) {
     if (!(await wordExists(candidate.word))) return candidate
   }
 
-  const { data } = await supabase.from('words').select('*').limit(1).single()
-  if (!data) return null
+  const { data, error } = await supabase.from('words').select('*').limit(1).single()
+  if (error || !data) {
+    console.error('Error fetching fallback word:', error)
+    return null
+  }
 
   return {
     word: data.word,
@@ -204,16 +224,21 @@ async function saveWordAndAssignToUsers(wordObj, servedForUsers) {
   const now = new Date().toISOString()
   const nextReview = new Date(Date.now() + 2 * 86400000).toISOString()
 
-  const { data: existing } = await supabase
+  const { data: existing, error: checkError } = await supabase
     .from('words')
     .select('id, pronunciation')
     .ilike('word', wordObj.word)
     .maybeSingle()
 
+  if (checkError) {
+    console.error('Error checking existing word:', checkError)
+    return null
+  }
+
   let wordId = existing?.id
 
   if (!wordId) {
-    const { data } = await supabase
+    const { data, error: insertError } = await supabase
       .from('words')
       .insert({
         ...wordObj,
@@ -222,7 +247,12 @@ async function saveWordAndAssignToUsers(wordObj, servedForUsers) {
       })
       .select('id')
       .single()
-    if (!data) return null
+
+    if (insertError || !data) {
+      console.error('Error inserting word:', insertError)
+      return null
+    }
+
     wordId = data.id
   }
 
@@ -235,19 +265,29 @@ async function saveWordAndAssignToUsers(wordObj, servedForUsers) {
     served_index: u.index || 1
   }))
 
-  await supabase.from('user_words').insert(rows)
+  const { error: insertUserWordsError } = await supabase.from('user_words').insert(rows)
+  if (insertUserWordsError) {
+    console.error('Error inserting user_words:', insertUserWordsError)
+    return null
+  }
+
   return { id: wordId }
 }
 
 async function serveWordsToUser(user) {
   const now = Date.now()
-  const { count } = await supabase
+  const { count, error: countError } = await supabase
     .from('user_words')
     .select('id', { count: 'exact' })
     .eq('user_id', user.id)
     .lte('next_review', now)
 
-  if (count >= 5) {
+  if (countError) {
+    console.error('Error fetching due reviews count:', countError)
+    return
+  }
+
+  if (count && count >= 5) {
     await bot.sendMessage(user.chat_id, 'Today is a review day. Use /review.')
     return
   }
