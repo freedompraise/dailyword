@@ -275,22 +275,6 @@ async function saveWordAndAssignToUsers(wordObj, servedForUsers) {
 }
 
 async function serveWordsToUser(user) {
-  const now = Date.now()
-  const { count, error: countError } = await supabase
-    .from('user_words')
-    .select('id', { count: 'exact' })
-    .eq('user_id', user.id)
-    .lte('next_review', now)
-
-  if (countError) {
-    console.error('Error fetching due reviews count:', countError)
-    return
-  }
-
-  if (count && count >= 5) {
-    await bot.sendMessage(user.chat_id, 'Today is a review day. Use /review.')
-    return
-  }
 
   const used = await getUsedWords(1000)
   const words = []
