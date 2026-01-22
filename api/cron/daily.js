@@ -32,15 +32,24 @@ async function notifyAdminOfFailure(userId, reason, details = {}) {
   }
 }
 
-async function getUsedWords(limit = 500) {
-  const { data, error } = await supabase
-    .from('words')
-    .select('word')
-    .order('created_at', { ascending: false })
-    .limit(limit)
+function isBotBlockedError(error) {
+  return error?.response?.statusCode === 403 ||
+    error?.message?.includes('403') ||
+    error?.message?.includes('Forbidden') ||
+    error?.message?.includes('bot was blocked')
+}
 
-  if (error) throw error
-  return (data || []).map(r => r.word.toLowerCase())
+async function sendMessageSafely(chatId, text, options = {}) {
+  try {
+    await bot.sendMessage(chatId, text, options)
+    return true
+  } catch (error) {
+    if (isBotBlockedError(error)) {
+      console.warn(`Bot blocked by user ${chatId}, skipping message`)
+      return false
+    }
+    throw error
+  }
 }
 
 function promptForSeededWord(seed) {
@@ -68,56 +77,6 @@ Return ONLY valid JSON in this exact structure, with no extra text:
 
 The pronunciation should be easy to read, for example: ser-uhn-DIP-i-tee.
 `
-}
-
-async function getAvailableWordsFromDb(userId, avoidList = []) {
-  const avoidLower = new Set(avoidList.map(w => w.toLowerCase()))
-  let learnedWordIds = []
-
-  if (userId) {
-    const { data, error } = await supabase
-      .from('user_words')
-      .select('word_id')
-      .eq('user_id', userId)
-
-    if (error) {
-      console.error('Error fetching user words:', error)
-      return null
-    }
-
-    learnedWordIds = data ? data.map(r => r.word_id) : []
-  }
-
-  let query = supabase
-    .from('words')
-    .select('*')
-    .order('created_at', { ascending: false })
-    .limit(500)
-
-  if (learnedWordIds.length) {
-    query = query.not('id', 'in', `(${learnedWordIds.join(',')})`)
-  }
-
-  const { data, error } = await query
-  if (error) {
-    console.error('Error fetching available words:', error)
-    return null
-  }
-
-  if (!data || !data.length) return null
-
-  const candidates = data.filter(w => !avoidLower.has((w.word || '').toLowerCase()))
-  if (!candidates.length) return null
-
-  const pick = candidates[Math.floor(Math.random() * candidates.length)]
-  return {
-    word: pick.word,
-    pronunciation: pick.pronunciation || '',
-    part_of_speech: pick.part_of_speech || '',
-    definition: pick.definition || '',
-    example: pick.example || '',
-    example_2: pick.example_2 || pick.example || ''
-  }
 }
 
 function parseGeneratedCandidate(rawText) {
@@ -171,27 +130,84 @@ async function generateWithSeed(seed, avoidList = []) {
   }
 }
 
-async function wordExists(word) {
-  if (!word) return false
-  const { data, error } = await supabase
-    .from('words')
-    .select('id')
-    .ilike('word', word.trim())
-    .maybeSingle()
+async function batchFetchAllData(userIds) {
+  const [wordsResult, userWordsResult] = await Promise.all([
+    supabase
+      .from('words')
+      .select('*')
+      .order('created_at', { ascending: false })
+      .limit(1000),
+    userIds.length > 0
+      ? supabase
+        .from('user_words')
+        .select('user_id, word_id')
+        .in('user_id', userIds)
+      : { data: [], error: null }
+  ])
 
-  if (error) {
-    console.error('Error checking word existence:', error)
-    return false
+  if (wordsResult.error) {
+    console.error('Error fetching words:', wordsResult.error)
+    throw wordsResult.error
   }
 
-  return !!data
+  if (userWordsResult.error) {
+    console.error('Error fetching user_words:', userWordsResult.error)
+    throw userWordsResult.error
+  }
+
+  const allWords = wordsResult.data || []
+  const allUserWords = userWordsResult.data || []
+
+  const learnedWordsByUser = new Map()
+  for (const uw of allUserWords) {
+    if (!learnedWordsByUser.has(uw.user_id)) {
+      learnedWordsByUser.set(uw.user_id, new Set())
+    }
+    learnedWordsByUser.get(uw.user_id).add(uw.word_id)
+  }
+
+  const wordsByLowercase = new Map()
+  for (const word of allWords) {
+    const key = (word.word || '').toLowerCase()
+    if (!wordsByLowercase.has(key)) {
+      wordsByLowercase.set(key, word)
+    }
+  }
+
+  return {
+    allWords,
+    learnedWordsByUser,
+    wordsByLowercase
+  }
 }
 
-async function generateUniqueWord(userId, avoidList = []) {
+function pickAvailableWord(userId, allWords, learnedWordIds, avoidList) {
+  const avoidLower = new Set(avoidList.map(w => w.toLowerCase()))
+  const learnedSet = new Set(learnedWordIds || [])
+
+  const candidates = allWords.filter(w => {
+    const wordLower = (w.word || '').toLowerCase()
+    return !avoidLower.has(wordLower) && !learnedSet.has(w.id)
+  })
+
+  if (!candidates.length) return null
+
+  const pick = candidates[Math.floor(Math.random() * candidates.length)]
+  return {
+    word: pick.word,
+    pronunciation: pick.pronunciation || '',
+    part_of_speech: pick.part_of_speech || '',
+    definition: pick.definition || '',
+    example: pick.example || '',
+    example_2: pick.example_2 || pick.example || ''
+  }
+}
+
+async function generateUniqueWord(userId, avoidList, allWords, learnedWordIds, wordsByLowercase) {
   const useAI = Math.random() < 0.1
 
   if (!useAI) {
-    const dbWord = await getAvailableWordsFromDb(userId, avoidList)
+    const dbWord = pickAvailableWord(userId, allWords, learnedWordIds, avoidList)
     if (dbWord) return dbWord
   }
 
@@ -199,112 +215,200 @@ async function generateUniqueWord(userId, avoidList = []) {
     const seed = Math.floor(Math.random() * 1e9) + i
     const candidate = await generateWithSeed(seed, avoidList)
     if (!candidate) continue
-    if (!(await wordExists(candidate.word))) return candidate
+
+    const wordLower = candidate.word.toLowerCase()
+    if (!wordsByLowercase.has(wordLower)) {
+      return candidate
+    }
   }
 
-  const { data, error } = await supabase.from('words').select('*').limit(1).single()
-  if (error || !data) {
-    console.error('Error fetching fallback word:', error)
-    return null
+  if (allWords.length > 0) {
+    const fallback = allWords[Math.floor(Math.random() * allWords.length)]
+    return {
+      word: fallback.word,
+      pronunciation: fallback.pronunciation || '',
+      part_of_speech: fallback.part_of_speech || '',
+      definition: fallback.definition || '',
+      example: fallback.example || '',
+      example_2: fallback.example_2 || fallback.example || ''
+    }
   }
 
-  return {
-    word: data.word,
-    pronunciation: data.pronunciation || '',
-    part_of_speech: data.part_of_speech || '',
-    definition: data.definition || '',
-    example: data.example || '',
-    example_2: data.example_2 || data.example || ''
-  }
+  return null
 }
 
-async function saveWordAndAssignToUsers(wordObj, servedForUsers) {
-  if (!wordObj || !servedForUsers.length) return null
-
+async function batchInsertWordsAndUserWords(allWordsToSave, allUserWordsToInsert, wordsByLowercase) {
   const now = new Date().toISOString()
-  const nextReview = new Date(Date.now() + 2 * 86400000).toISOString()
+  const wordMap = new Map()
 
-  const { data: existing, error: checkError } = await supabase
-    .from('words')
-    .select('id, pronunciation')
-    .ilike('word', wordObj.word)
-    .maybeSingle()
-
-  if (checkError) {
-    console.error('Error checking existing word:', checkError)
-    return null
+  for (const [wordLower, word] of wordsByLowercase) {
+    wordMap.set(wordLower, word.id)
   }
 
-  let wordId = existing?.id
+  const wordsToInsert = []
+  const seenWords = new Set()
 
-  if (!wordId) {
-    const { data, error: insertError } = await supabase
-      .from('words')
-      .insert({
+  for (const wordObj of allWordsToSave) {
+    const wordLower = wordObj.word.toLowerCase()
+
+    if (seenWords.has(wordLower)) continue
+    seenWords.add(wordLower)
+
+    if (!wordMap.has(wordLower)) {
+      wordsToInsert.push({
         ...wordObj,
         source: 'hf',
         created_at: now
       })
-      .select('id')
-      .single()
+    }
+  }
 
-    if (insertError || !data) {
-      console.error('Error inserting word:', insertError)
-      return null
+  if (wordsToInsert.length > 0) {
+    const { data: insertedWords, error: insertError } = await supabase
+      .from('words')
+      .insert(wordsToInsert)
+      .select('id, word')
+
+    if (insertError) {
+      console.error('Error batch inserting words:', insertError)
+      throw insertError
     }
 
-    wordId = data.id
+    if (insertedWords) {
+      for (const w of insertedWords) {
+        wordMap.set(w.word.toLowerCase(), w.id)
+      }
+    }
   }
 
-  const rows = servedForUsers.map(u => ({
-    user_id: u.id,
-    word_id: wordId,
-    served_at: now,
-    next_review: nextReview,
-    interval: 2,
-    served_index: u.index || 1
-  }))
+  const userWordsRows = []
+  for (const { wordObj, userId, index } of allUserWordsToInsert) {
+    const wordLower = wordObj.word.toLowerCase()
+    let wordId = wordMap.get(wordLower)
 
-  const { error: insertUserWordsError } = await supabase.from('user_words').insert(rows)
-  if (insertUserWordsError) {
-    console.error('Error inserting user_words:', insertUserWordsError)
-    return null
+    if (!wordId) {
+      const { data: existingWord, error: checkError } = await supabase
+        .from('words')
+        .select('id')
+        .ilike('word', wordObj.word)
+        .maybeSingle()
+
+      if (checkError) {
+        console.error(`Error checking word existence for ${wordObj.word}:`, checkError)
+        continue
+      }
+
+      if (existingWord) {
+        wordId = existingWord.id
+        wordMap.set(wordLower, wordId)
+      } else {
+        console.error(`Word not found in database: ${wordObj.word}`)
+        continue
+      }
+    }
+
+    const nextReview = new Date(Date.now() + 2 * 86400000).toISOString()
+    userWordsRows.push({
+      user_id: userId,
+      word_id: wordId,
+      served_at: now,
+      next_review: nextReview,
+      interval: 2,
+      served_index: index
+    })
   }
 
-  return { id: wordId }
+  if (userWordsRows.length > 0) {
+    const { error: insertUserWordsError } = await supabase
+      .from('user_words')
+      .insert(userWordsRows)
+
+    if (insertUserWordsError) {
+      console.error('Error batch inserting user_words:', insertUserWordsError)
+      throw insertUserWordsError
+    }
+  }
+
+  return wordMap
 }
 
-async function serveWordsToUser(user) {
+async function serveWordsToUsers(users, allWords, learnedWordsByUser, wordsByLowercase) {
+  const allWordsToSave = []
+  const allUserWordsToInsert = []
+  const userWordAssignments = []
 
-  const used = await getUsedWords(1000)
-  const words = []
+  for (const user of users) {
+    const learnedWordIds = learnedWordsByUser.get(user.id)
+      ? Array.from(learnedWordsByUser.get(user.id))
+      : []
 
-  for (let i = 0; i < user.words_per_day; i++) {
-    const w = await generateUniqueWord(user.id, used)
-    if (!w) continue
-    used.unshift(w.word.toLowerCase())
-    words.push(w)
+    const used = []
+    const words = []
+
+    for (let i = 0; i < user.words_per_day; i++) {
+      const w = await generateUniqueWord(
+        user.id,
+        used,
+        allWords,
+        learnedWordIds,
+        wordsByLowercase
+      )
+      if (!w) continue
+      used.push(w.word.toLowerCase())
+      words.push(w)
+    }
+
+    if (!words.length) {
+      await notifyAdminOfFailure(user.id, 'No words generated')
+      continue
+    }
+
+    for (let i = 0; i < words.length; i++) {
+      const wordObj = words[i]
+      allWordsToSave.push(wordObj)
+      allUserWordsToInsert.push({
+        wordObj,
+        userId: user.id,
+        index: i + 1
+      })
+      userWordAssignments.push({
+        user,
+        wordObj,
+        index: i + 1
+      })
+    }
   }
 
-  if (!words.length) {
-    await notifyAdminOfFailure(user.id, 'No words generated')
+  if (allWordsToSave.length === 0) {
     return
   }
 
-  for (let i = 0; i < words.length; i++) {
-    const saved = await saveWordAndAssignToUsers(words[i], [{ id: user.id, index: i + 1 }])
-    if (!saved) continue
+  const wordMap = await batchInsertWordsAndUserWords(allWordsToSave, allUserWordsToInsert, wordsByLowercase)
 
-    let text = `📚 Word ${i + 1} of ${words.length}\n\n${words[i].word}`
-    if (words[i].pronunciation) text += ` (${words[i].pronunciation})`
-    if (words[i].part_of_speech) text += `\n<i>${words[i].part_of_speech}</i>`
+  for (const { user, wordObj, index } of userWordAssignments) {
+    const wordLower = wordObj.word.toLowerCase()
+    const wordId = wordMap.get(wordLower)
 
-    await bot.sendMessage(user.chat_id, text, {
+    if (!wordId) {
+      console.error(`Word ID not found in wordMap for: ${wordObj.word}`)
+      continue
+    }
+
+    let text = `📚 Word ${index} of ${user.words_per_day}\n\n${wordObj.word}`
+    if (wordObj.pronunciation) text += ` (${wordObj.pronunciation})`
+    if (wordObj.part_of_speech) text += `\n<i>${wordObj.part_of_speech}</i>`
+
+    const sent = await sendMessageSafely(user.chat_id, text, {
       parse_mode: 'HTML',
-      ...createNewWordCardKeyboard(saved.id)
+      ...createNewWordCardKeyboard(wordId)
     })
 
-    if (i < words.length - 1) {
+    if (!sent && index === 1) {
+      console.warn(`User ${user.id} (${user.chat_id}) blocked the bot, skipping remaining words`)
+      break
+    }
+
+    if (index < user.words_per_day) {
       await new Promise(r => setTimeout(r, 500))
     }
   }
@@ -316,18 +420,26 @@ module.exports = async function handler(req, res) {
   }
 
   try {
-    const { data: users } = await supabase.from('users').select('*')
+    const { data: users, error: usersError } = await supabase.from('users').select('*')
+
+    if (usersError) {
+      console.error('Error fetching users:', usersError)
+      return res.status(500).json({ error: usersError.message })
+    }
+
     if (!users?.length) {
       return res.status(200).json({ message: 'No users' })
     }
 
-    for (const u of users) {
-      await serveWordsToUser(u)
-    }
+    const userIds = users.map(u => u.id)
+
+    const { allWords, learnedWordsByUser, wordsByLowercase } = await batchFetchAllData(userIds)
+
+    await serveWordsToUsers(users, allWords, learnedWordsByUser, wordsByLowercase)
 
     res.status(200).json({ message: 'Daily words sent' })
   } catch (e) {
-    console.error(e)
+    console.error('Daily cron error:', e)
     res.status(500).json({ error: e.message })
   }
 }

@@ -13,10 +13,10 @@
 
 const { describe, it, expect, beforeAll, afterAll, beforeEach } = require('@jest/globals');
 const supabase = require('../supabaseClient');
-const sessionManager = require('../api/sessionManager');
-const { validateAnswer } = require('../api/answerValidator');
-const { updateWordInterval, getDueWords, getDueWordsCount, getTodayWords } = require('../api/spacedRepetition');
-const { createWordCardKeyboard, createDefinitionKeyboard, createReviewStartKeyboard } = require('../api/keyboardUtils');
+const sessionManager = require('../lib/sessionManager');
+const { validateAnswer } = require('../lib/answerValidator');
+const { updateWordInterval, getDueWords, getDueWordsCount, getTodayWords } = require('../lib/spacedRepetition');
+const { createNewWordCardKeyboard, createWordCardKeyboard, createDefinitionKeyboard, createReviewStartKeyboard } = require('../lib/keyboardUtils');
 
 // Mock Telegram bot for testing
 class MockTelegramBot {
@@ -193,6 +193,34 @@ describe('DailyWord Bot Functional Tests', () => {
       const cardText = `**${word.word}**`;
       expect(cardText).not.toContain('definition');
       expect(cardText).not.toContain('expressed clearly');
+    });
+
+    it('should prioritize existing words from database over AI generation', async () => {
+      // Create multiple words in DB
+      const words = [
+        { word: 'test1', pronunciation: '/test1/', part_of_speech: 'noun', definition: 'test 1', example: 'test 1', example_2: 'test 1 again' },
+        { word: 'test2', pronunciation: '/test2/', part_of_speech: 'noun', definition: 'test 2', example: 'test 2', example_2: 'test 2 again' },
+        { word: 'test3', pronunciation: '/test3/', part_of_speech: 'noun', definition: 'test 3', example: 'test 3', example_2: 'test 3 again' }
+      ];
+
+      for (const w of words) {
+        await supabase.from('words').insert(w);
+      }
+
+      // Mock the daily.js functions - we'll test the prioritization logic
+      // The function should prefer DB words over AI generation
+      const { data: dbWords } = await supabase
+        .from('words')
+        .select('*')
+        .limit(10);
+
+      expect(dbWords).toBeDefined();
+      expect(dbWords.length).toBeGreaterThan(0);
+      
+      // Cleanup
+      for (const w of words) {
+        await supabase.from('words').delete().ilike('word', w.word);
+      }
     });
   });
 

@@ -50,6 +50,11 @@ class MockQueryBuilder {
     return this;
   }
 
+  in(column, values) {
+    this.filters.push({ type: 'in', column, value: values });
+    return this;
+  }
+
   gt(column, value) {
     this.filters.push({ type: 'gt', column, value });
     return this;
@@ -101,7 +106,8 @@ class MockQueryBuilder {
   }
 
   async execute() {
-    let data = [...(this.client.data[this.table] || [])];
+    // If we have inserted data (from insert().select()), use that
+    let data = this.insertedData ? [...this.insertedData] : [...(this.client.data[this.table] || [])];
 
     // Apply filters
     for (const filter of this.filters) {
@@ -129,6 +135,10 @@ class MockQueryBuilder {
               return !ids.includes(value);
             }
             return true;
+          case 'in':
+            // Support IN operator for arrays
+            const inValues = Array.isArray(filter.value) ? filter.value : filter.value.replace(/[()]/g, '').split(',').map(v => v.trim());
+            return inValues.includes(String(value)) || inValues.includes(parseInt(value));
           default:
             return true;
         }
@@ -171,10 +181,16 @@ class MockQueryBuilder {
 
   // Make query builder thenable (works with await)
   then(onResolve, onReject) {
+    if (this.isDelete) {
+      return this.executeDelete().then(onResolve, onReject);
+    }
     return this.execute().then(onResolve, onReject);
   }
 
   catch(onReject) {
+    if (this.isDelete) {
+      return this.executeDelete().catch(onReject);
+    }
     return this.execute().catch(onReject);
   }
 
@@ -187,12 +203,22 @@ class MockQueryBuilder {
       created_at: record.created_at || new Date().toISOString()
     }));
     table.push(...inserted);
-    return {
+    
+    // Return a thenable object that supports .select().single() chaining
+    const result = {
       data: inserted.length === 1 ? inserted[0] : inserted,
-      error: null,
-      select: () => this,
-      single: () => ({ data: inserted[0], error: null })
+      error: null
     };
+    
+    // Add select() method that returns a query builder
+    result.select = (fields) => {
+      const builder = new MockQueryBuilder(this.client, this.table);
+      builder.insertedData = inserted;
+      builder.selectFields = fields || '*';
+      return builder;
+    };
+    
+    return result;
   }
 
   async update(values) {
@@ -217,26 +243,71 @@ class MockQueryBuilder {
     };
   }
 
-  async delete() {
+  delete() {
+    // Mark as delete operation and return this for chaining
+    this.isDelete = true;
+    return this;
+  }
+  
+  async executeDelete() {
     const table = this.client.data[this.table];
-    let deleted = 0;
+    let deleted = [];
     
-    for (const filter of this.filters) {
-      if (filter.type === 'eq') {
-        const index = table.findIndex(row => String(row[filter.column]) === String(filter.value));
-        if (index !== -1) {
-          table.splice(index, 1);
-          deleted++;
+    // Apply all filters
+    for (let i = table.length - 1; i >= 0; i--) {
+      const row = table[i];
+      let matches = true;
+      
+      for (const filter of this.filters) {
+        const value = row[filter.column];
+        switch (filter.type) {
+          case 'eq':
+            if (String(value) !== String(filter.value)) {
+              matches = false;
+            }
+            break;
+          case 'neq':
+            if (String(value) === String(filter.value)) {
+              matches = false;
+            }
+            break;
+          case 'gt':
+            if (new Date(value) <= new Date(filter.value)) {
+              matches = false;
+            }
+            break;
+          case 'gte':
+            if (new Date(value) < new Date(filter.value)) {
+              matches = false;
+            }
+            break;
+          case 'lt':
+            if (new Date(value) >= new Date(filter.value)) {
+              matches = false;
+            }
+            break;
+          case 'lte':
+            if (new Date(value) > new Date(filter.value)) {
+              matches = false;
+            }
+            break;
+          default:
+            break;
         }
+        if (!matches) break;
+      }
+      
+      if (matches) {
+        deleted.push(table.splice(i, 1)[0]);
       }
     }
 
-    return { data: null, error: null };
+    return { data: deleted.length > 0 ? deleted : null, error: null };
   }
 }
 
 // Make query builder methods return promises
-['select', 'eq', 'neq', 'gt', 'gte', 'lt', 'lte', 'ilike', 'not', 'order', 'limit', 'maybeSingle', 'single'].forEach(method => {
+['select', 'eq', 'neq', 'gt', 'gte', 'lt', 'lte', 'ilike', 'not', 'in', 'order', 'limit', 'maybeSingle', 'single', 'delete'].forEach(method => {
   const original = MockQueryBuilder.prototype[method];
   MockQueryBuilder.prototype[method] = function(...args) {
     const result = original.apply(this, args);
