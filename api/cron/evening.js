@@ -8,26 +8,6 @@ const { createReviewStartKeyboard } = require('../../lib/keyboardUtils');
 const TELEGRAM_TOKEN = process.env.TELEGRAM_TOKEN;
 const bot = TELEGRAM_TOKEN ? new TelegramBot(TELEGRAM_TOKEN) : null;
 
-function isBotBlockedError(error) {
-  return error?.response?.statusCode === 403 || 
-         error?.message?.includes('403') || 
-         error?.message?.includes('Forbidden') ||
-         error?.message?.includes('bot was blocked')
-}
-
-async function sendMessageSafely(chatId, text, options = {}) {
-  try {
-    await bot.sendMessage(chatId, text, options)
-    return true
-  } catch (error) {
-    if (isBotBlockedError(error)) {
-      console.warn(`Bot blocked by user ${chatId}, skipping message`)
-      return false
-    }
-    throw error
-  }
-}
-
 module.exports = async (req, res) => {
   if (!bot) {
     return res.status(500).json({ 
@@ -48,7 +28,7 @@ module.exports = async (req, res) => {
         
         if (dueCount >= 3) {
           // Only remind if 3+ words due (same threshold as review cron)
-          await sendMessageSafely(
+          await bot.sendMessage(
             u.chat_id,
             `🌙 Evening check-in: You have ${dueCount} word${dueCount !== 1 ? 's' : ''} due for review.\n\nUse /review to practice before tomorrow's new words.`,
             createReviewStartKeyboard(dueCount, u.review_words_per_session || 3)

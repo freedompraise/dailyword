@@ -32,26 +32,6 @@ async function notifyAdminOfFailure(userId, reason, details = {}) {
   }
 }
 
-function isBotBlockedError(error) {
-  return error?.response?.statusCode === 403 ||
-    error?.message?.includes('403') ||
-    error?.message?.includes('Forbidden') ||
-    error?.message?.includes('bot was blocked')
-}
-
-async function sendMessageSafely(chatId, text, options = {}) {
-  try {
-    await bot.sendMessage(chatId, text, options)
-    return true
-  } catch (error) {
-    if (isBotBlockedError(error)) {
-      console.warn(`Bot blocked by user ${chatId}, skipping message`)
-      return false
-    }
-    throw error
-  }
-}
-
 function promptForSeededWord(seed) {
   return `
 You generate ONE useful, modern English word that an educated person is likely to encounter in daily reading, work, or conversation.
@@ -337,6 +317,8 @@ async function serveWordsToUsers(users, allWords, learnedWordsByUser, wordsByLow
   const allUserWordsToInsert = []
   const userWordAssignments = []
 
+  console.log(`Processing ${users.length} users for word delivery`)
+
   for (const user of users) {
     const learnedWordIds = learnedWordsByUser.get(user.id)
       ? Array.from(learnedWordsByUser.get(user.id))
@@ -353,15 +335,21 @@ async function serveWordsToUsers(users, allWords, learnedWordsByUser, wordsByLow
         learnedWordIds,
         wordsByLowercase
       )
-      if (!w) continue
+      if (!w) {
+        console.warn(`Failed to generate word ${i + 1} for user ${user.id}`)
+        continue
+      }
       used.push(w.word.toLowerCase())
       words.push(w)
     }
 
     if (!words.length) {
+      console.error(`No words generated for user ${user.id}`)
       await notifyAdminOfFailure(user.id, 'No words generated')
       continue
     }
+
+    console.log(`Generated ${words.length} words for user ${user.id}`)
 
     for (let i = 0; i < words.length; i++) {
       const wordObj = words[i]
@@ -380,17 +368,21 @@ async function serveWordsToUsers(users, allWords, learnedWordsByUser, wordsByLow
   }
 
   if (allWordsToSave.length === 0) {
+    console.warn('No words to save for any user')
     return
   }
 
+  console.log(`Saving ${allWordsToSave.length} words and ${allUserWordsToInsert.length} user_word relationships`)
   const wordMap = await batchInsertWordsAndUserWords(allWordsToSave, allUserWordsToInsert, wordsByLowercase)
+  console.log(`Word map contains ${wordMap.size} entries`)
 
+  let sentCount = 0
   for (const { user, wordObj, index } of userWordAssignments) {
     const wordLower = wordObj.word.toLowerCase()
     const wordId = wordMap.get(wordLower)
 
     if (!wordId) {
-      console.error(`Word ID not found in wordMap for: ${wordObj.word}`)
+      console.error(`Word ID not found in wordMap for: ${wordObj.word} (user ${user.id})`)
       continue
     }
 
@@ -398,20 +390,23 @@ async function serveWordsToUsers(users, allWords, learnedWordsByUser, wordsByLow
     if (wordObj.pronunciation) text += ` (${wordObj.pronunciation})`
     if (wordObj.part_of_speech) text += `\n<i>${wordObj.part_of_speech}</i>`
 
-    const sent = await sendMessageSafely(user.chat_id, text, {
-      parse_mode: 'HTML',
-      ...createNewWordCardKeyboard(wordId)
-    })
+    try {
+      await bot.sendMessage(user.chat_id, text, {
+        parse_mode: 'HTML',
+        ...createNewWordCardKeyboard(wordId)
+      })
+      sentCount++
 
-    if (!sent && index === 1) {
-      console.warn(`User ${user.id} (${user.chat_id}) blocked the bot, skipping remaining words`)
-      break
-    }
-
-    if (index < user.words_per_day) {
-      await new Promise(r => setTimeout(r, 500))
+      if (index < user.words_per_day) {
+        await new Promise(r => setTimeout(r, 500))
+      }
+    } catch (error) {
+      console.error(`Error sending word "${wordObj.word}" to user ${user.id} (${user.chat_id}):`, error.message || error)
+      // Continue with other users instead of throwing
     }
   }
+
+  console.log(`Successfully sent ${sentCount} messages out of ${userWordAssignments.length} total`)
 }
 
 module.exports = async function handler(req, res) {

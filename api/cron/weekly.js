@@ -7,26 +7,6 @@ const { getDueWordsCount } = require('../../lib/spacedRepetition');
 const TELEGRAM_TOKEN = process.env.TELEGRAM_TOKEN;
 const bot = TELEGRAM_TOKEN ? new TelegramBot(TELEGRAM_TOKEN) : null;
 
-function isBotBlockedError(error) {
-  return error?.response?.statusCode === 403 || 
-         error?.message?.includes('403') || 
-         error?.message?.includes('Forbidden') ||
-         error?.message?.includes('bot was blocked')
-}
-
-async function sendMessageSafely(chatId, text, options = {}) {
-  try {
-    await bot.sendMessage(chatId, text, options)
-    return true
-  } catch (error) {
-    if (isBotBlockedError(error)) {
-      console.warn(`Bot blocked by user ${chatId}, skipping message`)
-      return false
-    }
-    throw error
-  }
-}
-
 module.exports = async (req, res) => {
   if (!bot) {
     return res.status(500).json({ 
@@ -98,7 +78,7 @@ module.exports = async (req, res) => {
           summaryText += `\n💡 Use /review to practice your due words!`;
         }
         
-        await sendMessageSafely(u.chat_id, summaryText, { parse_mode: 'HTML' });
+        await bot.sendMessage(u.chat_id, summaryText, { parse_mode: 'HTML' });
       } catch (e) {
         console.warn('Error sending weekly summary to user', u.chat_id, e);
       }
