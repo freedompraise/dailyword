@@ -10,7 +10,10 @@ const DEFAULT_SCHEMA = process.env.DEFAULT_SCHEMA || 'public';
  */
 function db(schema) {
   const s = schema ?? DEFAULT_SCHEMA;
-  return s === 'public' ? supabase : supabase.schema(s);
+  if (s === 'public' || s === 'test') {
+    return supabase; // Supabase PostgREST only allows public/graphql_public; map "test" to public for local/testing
+  }
+  return supabase.schema(s);
 }
 
 module.exports = db;

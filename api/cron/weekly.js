@@ -79,6 +79,12 @@ module.exports = async (req, res) => {
         }
         
         await bot.sendMessage(u.chat_id, summaryText, { parse_mode: 'HTML' });
+        await bot.sendPoll(
+          u.chat_id,
+          'How many of your DailyWord words did you actually use in real life this week?',
+          ['0', '1-2', '3-5', '6-10', '11+'],
+          { is_anonymous: false, allows_multiple_answers: false }
+        );
       } catch (e) {
         console.warn('Error sending weekly summary to user', u.chat_id, e);
       }

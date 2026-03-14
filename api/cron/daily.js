@@ -184,13 +184,7 @@ function pickAvailableWord(userId, allWords, learnedWordIds, avoidList) {
 }
 
 async function generateUniqueWord(userId, avoidList, allWords, learnedWordIds, wordsByLowercase) {
-  const useAI = Math.random() < 0.1
-
-  if (!useAI) {
-    const dbWord = pickAvailableWord(userId, allWords, learnedWordIds, avoidList)
-    if (dbWord) return dbWord
-  }
-
+  // Always try AI first; fall back to curated words on failure/duplication
   for (let i = 0; i < 2; i++) {
     const seed = Math.floor(Math.random() * 1e9) + i
     const candidate = await generateWithSeed(seed, avoidList)
@@ -201,6 +195,9 @@ async function generateUniqueWord(userId, avoidList, allWords, learnedWordIds, w
       return candidate
     }
   }
+
+  const dbWord = pickAvailableWord(userId, allWords, learnedWordIds, avoidList)
+  if (dbWord) return dbWord
 
   if (allWords.length > 0) {
     const fallback = allWords[Math.floor(Math.random() * allWords.length)]
@@ -386,7 +383,7 @@ async function serveWordsToUsers(users, allWords, learnedWordsByUser, wordsByLow
       continue
     }
 
-    let text = `📚 Word ${index} of ${user.words_per_day}\n\n${wordObj.word}`
+    let text = `🆕 New Word Drop\nWord ${index} of ${user.words_per_day}\n\n${wordObj.word}`
     if (wordObj.pronunciation) text += ` (${wordObj.pronunciation})`
     if (wordObj.part_of_speech) text += `\n<i>${wordObj.part_of_speech}</i>`
 
