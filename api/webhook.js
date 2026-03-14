@@ -1,5 +1,5 @@
 const TelegramBot = require('node-telegram-bot-api');
-const supabase = require('../supabaseClient');
+const db = require('../db');
 const { getWelcomeMessage, getHelpMessage, formatTimeUntilNextWord, hasReceivedTodayWords, getFriendlyResponse } = require('../lib/utils');
 const { getUserByChatId, ensureUser, getUserById } = require('../lib/userUtils');
 const sessionManager = require('../lib/sessionManager');
@@ -29,21 +29,21 @@ async function updateUserStreak(userId) {
   const now = new Date();
   const nowISO = now.toISOString();
   const oneDay = 24 * 60 * 60 * 1000;
-  const { data: stat } = await supabase.from('user_stats').select('*').eq('user_id', userId).maybeSingle();
+  const { data: stat } = await db().from('user_stats').select('*').eq('user_id', userId).maybeSingle();
   if (!stat) {
-    await supabase.from('user_stats').insert({ user_id: userId, streak: 1, last_completed: nowISO });
+    await db().from('user_stats').insert({ user_id: userId, streak: 1, last_completed: nowISO });
     return;
   }
   if (stat.last_completed) {
     const lastCompletedDate = new Date(stat.last_completed);
     const timeDiff = now.getTime() - lastCompletedDate.getTime();
     if (timeDiff <= oneDay * 2) {
-      await supabase.from('user_stats').update({ streak: stat.streak + 1, last_completed: nowISO }).eq('id', stat.id);
+      await db().from('user_stats').update({ streak: stat.streak + 1, last_completed: nowISO }).eq('id', stat.id);
     } else {
-      await supabase.from('user_stats').update({ streak: 1, last_completed: nowISO }).eq('id', stat.id);
+      await db().from('user_stats').update({ streak: 1, last_completed: nowISO }).eq('id', stat.id);
     }
   } else {
-    await supabase.from('user_stats').update({ streak: 1, last_completed: nowISO }).eq('id', stat.id);
+    await db().from('user_stats').update({ streak: 1, last_completed: nowISO }).eq('id', stat.id);
   }
 }
 
@@ -461,7 +461,7 @@ async function endReviewSession(chatId, userId, sessionId) {
   }
   
   // Get streak
-  const { data: stat } = await supabase.from('user_stats').select('streak').eq('user_id', userId).maybeSingle();
+  const { data: stat } = await db().from('user_stats').select('streak').eq('user_id', userId).maybeSingle();
   if (stat && stat.streak) {
     summaryText += `Your streak: ${stat.streak} day${stat.streak !== 1 ? 's' : ''} 🔥\n\n`;
   }
@@ -595,7 +595,7 @@ module.exports = async (req, res) => {
             const todayStart = new Date();
             todayStart.setUTCHours(0, 0, 0, 0);
             const todayISO = todayStart.toISOString();
-            const { data: todayWords } = await supabase.from('user_words')
+            const { data: todayWords } = await db().from('user_words')
               .select('served_at')
               .eq('user_id', user.id)
               .gte('served_at', todayISO);
@@ -619,7 +619,7 @@ module.exports = async (req, res) => {
           if (!user) {
             await bot.sendMessage(chatId, '👋 Hi! Please send /start to get started first.');
           } else {
-            await supabase.from('users').update({ words_per_day: num }).eq('id', user.id);
+            await db().from('users').update({ words_per_day: num }).eq('id', user.id);
             const emoji = num === 1 ? '📖' : num === 2 ? '📚' : '📚📚📚';
             await bot.sendMessage(chatId, `${emoji} Perfect! I'll send you ${num} word${num > 1 ? 's' : ''} every day.\n\nThis will take effect from tomorrow's delivery!`);
           }
@@ -633,7 +633,7 @@ module.exports = async (req, res) => {
             if (!user) {
               await bot.sendMessage(chatId, '👋 Hi! Please send /start to get started first.');
             } else {
-              await supabase.from('users').update({ review_words_per_session: num }).eq('id', user.id);
+              await db().from('users').update({ review_words_per_session: num }).eq('id', user.id);
               await bot.sendMessage(chatId, `⚙️ Perfect! Your review sessions will now include ${num} word${num > 1 ? 's' : ''} by default.`);
             }
           }
@@ -669,8 +669,8 @@ module.exports = async (req, res) => {
           if (!user) {
             await bot.sendMessage(chatId, '👋 Hi! Please send /start to get started first.');
           } else {
-            const { data: stat } = await supabase.from('user_stats').select('*').eq('user_id', user.id).maybeSingle();
-            const { data: learned } = await supabase.from('user_words')
+            const { data: stat } = await db().from('user_stats').select('*').eq('user_id', user.id).maybeSingle();
+            const { data: learned } = await db().from('user_words')
               .select('id,served_at,word_id,words:word_id(word)')
               .eq('user_id', user.id)
               .order('served_at', { ascending: true });

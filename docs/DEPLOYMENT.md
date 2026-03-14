@@ -14,7 +14,7 @@ This guide will help you deploy your Telegram bot to Vercel.
 You'll need to set these environment variables in Vercel:
 
 - `TELEGRAM_TOKEN` - Your Telegram bot token
-- `GEMINI_API_KEY` - Your Google Gemini API key
+- `HF_API_KEY` - Your Hugging Face API key
 - `SUPABASE_URL` - Your Supabase project URL
 - `SUPABASE_SERVICE_KEY` - Your Supabase service role key
 - `ADMIN_CHAT_ID` - (Optional) Your Telegram chat ID for admin notifications
@@ -41,7 +41,7 @@ vercel
 4. Set environment variables:
 ```bash
 vercel env add TELEGRAM_TOKEN
-vercel env add GEMINI_API_KEY
+vercel env add HF_API_KEY
 vercel env add SUPABASE_URL
 vercel env add SUPABASE_SERVICE_KEY
 vercel env add ADMIN_CHAT_ID  # Optional

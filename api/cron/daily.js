@@ -1,6 +1,6 @@
 // api/cron/daily.js
 const TelegramBot = require('node-telegram-bot-api')
-const supabase = require('../../supabaseClient')
+const db = require('../../db')
 const { InferenceClient } = require('@huggingface/inference')
 const { createNewWordCardKeyboard } = require('../../lib/keyboardUtils')
 
@@ -112,13 +112,13 @@ async function generateWithSeed(seed, avoidList = []) {
 
 async function batchFetchAllData(userIds) {
   const [wordsResult, userWordsResult] = await Promise.all([
-    supabase
+    db()
       .from('words')
       .select('*')
       .order('created_at', { ascending: false })
       .limit(1000),
     userIds.length > 0
-      ? supabase
+      ? db()
         .from('user_words')
         .select('user_id, word_id')
         .in('user_id', userIds)
@@ -244,7 +244,7 @@ async function batchInsertWordsAndUserWords(allWordsToSave, allUserWordsToInsert
   }
 
   if (wordsToInsert.length > 0) {
-    const { data: insertedWords, error: insertError } = await supabase
+    const { data: insertedWords, error: insertError } = await db()
       .from('words')
       .insert(wordsToInsert)
       .select('id, word')
@@ -267,7 +267,7 @@ async function batchInsertWordsAndUserWords(allWordsToSave, allUserWordsToInsert
     let wordId = wordMap.get(wordLower)
 
     if (!wordId) {
-      const { data: existingWord, error: checkError } = await supabase
+      const { data: existingWord, error: checkError } = await db()
         .from('words')
         .select('id')
         .ilike('word', wordObj.word)
@@ -299,7 +299,7 @@ async function batchInsertWordsAndUserWords(allWordsToSave, allUserWordsToInsert
   }
 
   if (userWordsRows.length > 0) {
-    const { error: insertUserWordsError } = await supabase
+    const { error: insertUserWordsError } = await db()
       .from('user_words')
       .insert(userWordsRows)
 
@@ -415,7 +415,7 @@ module.exports = async function handler(req, res) {
   }
 
   try {
-    const { data: users, error: usersError } = await supabase.from('users').select('*')
+    const { data: users, error: usersError } = await db().from('users').select('*')
 
     if (usersError) {
       console.error('Error fetching users:', usersError)

@@ -1,10 +1,8 @@
 // api/cron/review.js - Review reminder cron (runs hourly)
-// Note: Per SYSTEM_REDESIGN.md, this should NOT send prompts that update next_review before user responds
-// Instead, it sends reminders to users with due words to use /review command
 // The actual review happens through structured sessions initiated by /review command
 // Note: dotenv.config() removed - Vercel injects env vars directly
 const TelegramBot = require('node-telegram-bot-api');
-const supabase = require('../../supabaseClient');
+const db = require('../../db');
 const { getDueWordsCount } = require('../../lib/spacedRepetition');
 const { createReviewStartKeyboard } = require('../../lib/keyboardUtils');
 
@@ -19,7 +17,7 @@ module.exports = async (req, res) => {
   }
 
   try {
-    const { data: users } = await supabase.from('users').select('*');
+    const { data: users } = await db().from('users').select('*');
     if (!users) {
       return res.status(200).json({ message: 'No users found' });
     }

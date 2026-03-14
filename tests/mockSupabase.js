@@ -18,6 +18,10 @@ class MockSupabaseClient {
   from(table) {
     return new MockQueryBuilder(this, table);
   }
+
+  schema(name) {
+    return this; // mock ignores schema; return self for db('test') compatibility
+  }
 }
 
 class MockQueryBuilder {
@@ -29,6 +33,7 @@ class MockQueryBuilder {
     this.limitValue = null;
     this.selectFields = '*';
     this.countMode = false;
+    this.updateValues = null; // set by update() for chainable .update().eq().select().single()
   }
 
   select(fields, options = {}) {
@@ -106,6 +111,30 @@ class MockQueryBuilder {
   }
 
   async execute() {
+    // If this is an update chain, run update then return selected row(s)
+    if (this.updateValues != null) {
+      const table = this.client.data[this.table] || [];
+      let updated = [];
+      for (let i = 0; i < table.length; i++) {
+        let match = true;
+        for (const f of this.filters) {
+          if (f.type !== 'eq') continue;
+          if (String(table[i][f.column]) !== String(f.value)) {
+            match = false;
+            break;
+          }
+        }
+        if (match) {
+          table[i] = { ...table[i], ...this.updateValues };
+          updated.push(table[i]);
+        }
+      }
+      if (this.singleMode) {
+        return { data: updated.length === 1 ? updated[0] : (updated[0] || null), error: null };
+      }
+      return { data: updated, error: null };
+    }
+
     // If we have inserted data (from insert().select()), use that
     let data = this.insertedData ? [...this.insertedData] : [...(this.client.data[this.table] || [])];
 
@@ -194,7 +223,7 @@ class MockQueryBuilder {
     return this.execute().catch(onReject);
   }
 
-  async insert(values) {
+  insert(values) {
     const table = this.client.data[this.table];
     const records = Array.isArray(values) ? values : [values];
     const inserted = records.map(record => ({
@@ -203,44 +232,31 @@ class MockQueryBuilder {
       created_at: record.created_at || new Date().toISOString()
     }));
     table.push(...inserted);
-    
-    // Return a thenable object that supports .select().single() chaining
+
+    // Return a thenable that supports .select().single() chaining (sync return so .select() exists)
+    const self = this;
     const result = {
       data: inserted.length === 1 ? inserted[0] : inserted,
-      error: null
+      error: null,
+      select(fields) {
+        const builder = new MockQueryBuilder(self.client, self.table);
+        builder.insertedData = inserted;
+        builder.selectFields = fields || '*';
+        return builder;
+      },
+      then(resolve, reject) {
+        return Promise.resolve({ data: inserted.length === 1 ? inserted[0] : inserted, error: null }).then(resolve, reject);
+      },
+      catch(r) {
+        return Promise.resolve({ data: inserted, error: null }).catch(r);
+      }
     };
-    
-    // Add select() method that returns a query builder
-    result.select = (fields) => {
-      const builder = new MockQueryBuilder(this.client, this.table);
-      builder.insertedData = inserted;
-      builder.selectFields = fields || '*';
-      return builder;
-    };
-    
     return result;
   }
 
-  async update(values) {
-    const table = this.client.data[this.table];
-    let updated = [];
-    
-    for (const filter of this.filters) {
-      if (filter.type === 'eq') {
-        const index = table.findIndex(row => String(row[filter.column]) === String(filter.value));
-        if (index !== -1) {
-          table[index] = { ...table[index], ...values };
-          updated.push(table[index]);
-        }
-      }
-    }
-
-    return {
-      data: updated.length === 1 ? updated[0] : updated,
-      error: null,
-      select: () => this,
-      single: () => ({ data: updated[0] || null, error: null })
-    };
+  update(values) {
+    this.updateValues = values;
+    return this; // chainable: .update().eq().select().single()
   }
 
   delete() {
@@ -307,7 +323,7 @@ class MockQueryBuilder {
 }
 
 // Make query builder methods return promises
-['select', 'eq', 'neq', 'gt', 'gte', 'lt', 'lte', 'ilike', 'not', 'in', 'order', 'limit', 'maybeSingle', 'single', 'delete'].forEach(method => {
+['select', 'eq', 'neq', 'gt', 'gte', 'lt', 'lte', 'ilike', 'not', 'in', 'order', 'limit', 'maybeSingle', 'single', 'delete', 'update'].forEach(method => {
   const original = MockQueryBuilder.prototype[method];
   MockQueryBuilder.prototype[method] = function(...args) {
     const result = original.apply(this, args);

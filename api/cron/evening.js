@@ -1,7 +1,7 @@
 // api/cron/evening.js - Evening reminder cron job
 // Sends reminder to users with due reviews to use /review command
 const TelegramBot = require('node-telegram-bot-api');
-const supabase = require('../../supabaseClient');
+const db = require('../../db');
 const { getDueWordsCount } = require('../../lib/spacedRepetition');
 const { createReviewStartKeyboard } = require('../../lib/keyboardUtils');
 
@@ -16,7 +16,7 @@ module.exports = async (req, res) => {
   }
 
   try {
-    const { data: users } = await supabase.from('users').select('*');
+    const { data: users } = await db().from('users').select('*');
     if (!users) {
       return res.status(200).json({ message: 'No users found' });
     }
