@@ -12,7 +12,7 @@
  */
 
 const { describe, it, expect, beforeAll, afterAll, beforeEach } = require('@jest/globals');
-const supabase = require('../supabaseClient');
+const db = require('../db');
 const sessionManager = require('../lib/sessionManager');
 const { validateAnswer } = require('../lib/answerValidator');
 const { updateWordInterval, getDueWords, getDueWordsCount, getTodayWords } = require('../lib/spacedRepetition');
@@ -47,34 +47,48 @@ describe('DailyWord Bot Functional Tests', () => {
   let testWordId;
   let mockBot;
 
+  async function insertOrThrow(builderPromise, label) {
+    const res = await builderPromise;
+    if (res.error) {
+      throw new Error(`${label} failed: ${res.error.message || res.error}`);
+    }
+    return res.data;
+  }
+
   beforeAll(async () => {
     // Create test user
-    const { data: user } = await supabase
-      .from('users')
-      .insert({
-        chat_id: testChatId,
-        words_per_day: 1,
-        review_words_per_session: 3
-      })
-      .select()
-      .single();
+    const user = await insertOrThrow(
+      db('test')
+        .from('users')
+        .insert({
+          chat_id: testChatId,
+          words_per_day: 1,
+          review_words_per_session: 3
+        })
+        .select()
+        .single(),
+      'create user'
+    );
     
     testUserId = user.id;
 
     // Create test word
-    const { data: word } = await supabase
-      .from('words')
-      .insert({
-        word: 'serendipity',
-        pronunciation: '/ˌserənˈdipitē/',
-        part_of_speech: 'noun',
-        definition: 'the occurrence of events by chance in a happy way',
-        example: 'Finding that book was pure serendipity.',
-        example_2: 'Their meeting was pure serendipity.',
-        source: 'test'
-      })
-      .select()
-      .single();
+    const word = await insertOrThrow(
+      db('test')
+        .from('words')
+        .insert({
+          word: 'serendipity',
+          pronunciation: '/ˌserənˈdipitē/',
+          part_of_speech: 'noun',
+          definition: 'the occurrence of events by chance in a happy way',
+          example: 'Finding that book was pure serendipity.',
+          example_2: 'Their meeting was pure serendipity.',
+          source: 'test'
+        })
+        .select()
+        .single(),
+      'create word'
+    );
     
     testWordId = word.id;
 
@@ -84,13 +98,13 @@ describe('DailyWord Bot Functional Tests', () => {
   afterAll(async () => {
     // Cleanup test data
     if (testUserId) {
-      await supabase.from('user_words').delete().eq('user_id', testUserId);
-      await supabase.from('active_sessions').delete().eq('user_id', testUserId);
-      await supabase.from('user_stats').delete().eq('user_id', testUserId);
-      await supabase.from('users').delete().eq('id', testUserId);
+      await db('test').from('user_words').delete().eq('user_id', testUserId);
+      await db('test').from('active_sessions').delete().eq('user_id', testUserId);
+      await db('test').from('user_stats').delete().eq('user_id', testUserId);
+      await db('test').from('users').delete().eq('id', testUserId);
     }
     if (testWordId) {
-      await supabase.from('words').delete().eq('id', testWordId);
+      await db('test').from('words').delete().eq('id', testWordId);
     }
   });
 
@@ -104,7 +118,7 @@ describe('DailyWord Bot Functional Tests', () => {
       const newChatId = '999999999';
       
       // Check user doesn't exist
-      const { data: existing } = await supabase
+      const { data: existing } = await db('test')
         .from('users')
         .select('*')
         .eq('chat_id', newChatId)
@@ -113,52 +127,61 @@ describe('DailyWord Bot Functional Tests', () => {
       expect(existing).toBeNull();
 
       // Simulate /start
-      const { data: user } = await supabase
-        .from('users')
-        .insert({
-          chat_id: newChatId,
-          words_per_day: 1,
-          review_words_per_session: 3
-        })
-        .select()
-        .single();
+      const user = await insertOrThrow(
+        db('test')
+          .from('users')
+          .insert({
+            chat_id: newChatId,
+            words_per_day: 1,
+            review_words_per_session: 3
+          })
+          .select()
+          .single(),
+        'create user in test'
+      );
 
       expect(user).toBeDefined();
       expect(user.chat_id).toBe(newChatId);
       expect(user.words_per_day).toBe(1);
 
       // Cleanup
-      await supabase.from('users').delete().eq('id', user.id);
+      await db('test').from('users').delete().eq('id', user.id);
     });
 
     it('should create user_stats entry for new user', async () => {
       const newChatId = '888888888';
       
-      const { data: user } = await supabase
-        .from('users')
-        .insert({
-          chat_id: newChatId,
-          words_per_day: 1
-        })
-        .select()
-        .single();
+      const user = await insertOrThrow(
+        db('test')
+          .from('users')
+          .insert({
+            chat_id: newChatId,
+            words_per_day: 1
+          })
+          .select()
+          .single(),
+        'create user for stats'
+      );
 
-      const { data: stats } = await supabase
-        .from('user_stats')
-        .insert({
-          user_id: user.id,
-          streak: 0
-        })
-        .select()
-        .single();
+      const stats = await insertOrThrow(
+        db('test')
+          .from('user_stats')
+          .insert({
+            user_id: user.id,
+            streak: 0
+          })
+          .select()
+          .single(),
+        'create user_stats'
+      );
 
       expect(stats).toBeDefined();
       expect(stats.user_id).toBe(user.id);
       expect(stats.streak).toBe(0);
 
       // Cleanup
-      await supabase.from('user_stats').delete().eq('id', stats.id);
-      await supabase.from('users').delete().eq('id', user.id);
+      await db('test').from('user_stats').delete().eq('id', stats.id);
+      await db('test').from('users').delete().eq('id', user.id);
     });
   });
 
@@ -204,12 +227,12 @@ describe('DailyWord Bot Functional Tests', () => {
       ];
 
       for (const w of words) {
-        await supabase.from('words').insert(w);
+        await db('test').from('words').insert(w);
       }
 
       // Mock the daily.js functions - we'll test the prioritization logic
       // The function should prefer DB words over AI generation
-      const { data: dbWords } = await supabase
+      const { data: dbWords } = await db('test')
         .from('words')
         .select('*')
         .limit(10);
@@ -219,7 +242,7 @@ describe('DailyWord Bot Functional Tests', () => {
       
       // Cleanup
       for (const w of words) {
-        await supabase.from('words').delete().ilike('word', w.word);
+        await db('test').from('words').delete().ilike('word', w.word);
       }
     });
   });
@@ -230,7 +253,7 @@ describe('DailyWord Bot Functional Tests', () => {
       const buttons = keyboard.reply_markup.inline_keyboard[0];
       
       expect(buttons).toHaveLength(2);
-      expect(buttons[0].callback_data).toBe('word:show:123');
+      expect(buttons[0].callback_data).toBe('word:show:123:p');
       expect(buttons[1].callback_data).toBe('word:practice:123');
     });
 
@@ -243,16 +266,15 @@ describe('DailyWord Bot Functional Tests', () => {
       expect(allCallbacks).not.toContain(expect.stringContaining('challenge'));
       
       // Should have back button
-      expect(allCallbacks).toContain('word:back:123');
+      expect(allCallbacks).toContain('word:back:123:p');
     });
 
     it('should create review start keyboard with correct options', () => {
       const keyboard = createReviewStartKeyboard(10, 3);
       const buttons = keyboard.reply_markup.inline_keyboard;
       
-      expect(buttons[0][0].text).toContain('Start review (3 words)');
-      expect(buttons[1][0].text).toContain('Start review (all 10 words)');
-      expect(buttons[2][0].text).toContain('View word list');
+      expect(buttons[0][0].text).toContain('Start review (all 10 words)');
+      expect(buttons[1][0].text).toContain('View word list');
     });
   });
 
@@ -299,30 +321,33 @@ describe('DailyWord Bot Functional Tests', () => {
 
     beforeEach(async () => {
       // Create test user_word
-      const { data: userWord } = await supabase
-        .from('user_words')
-        .insert({
-          user_id: testUserId,
-          word_id: testWordId,
-          interval: 2,
-          next_review: new Date(Date.now() + 2 * 24 * 60 * 60 * 1000).toISOString(),
-          correct_count: 0,
-          incorrect_count: 0
-        })
-        .select()
-        .single();
+      const userWord = await insertOrThrow(
+        db('test')
+          .from('user_words')
+          .insert({
+            user_id: testUserId,
+            word_id: testWordId,
+            interval: 2,
+            next_review: new Date(Date.now() + 2 * 24 * 60 * 60 * 1000).toISOString(),
+            correct_count: 0,
+            incorrect_count: 0
+          })
+          .select()
+          .single(),
+        'create user_word'
+      );
       
       testUserWordId = userWord.id;
     });
 
     afterEach(async () => {
       if (testUserWordId) {
-        await supabase.from('user_words').delete().eq('id', testUserWordId);
+        await db('test').from('user_words').delete().eq('id', testUserWordId);
       }
     });
 
     it('should increase interval on correct answer', async () => {
-      const before = await supabase
+      const before = await db('test')
         .from('user_words')
         .select('interval')
         .eq('id', testUserWordId)
@@ -332,7 +357,7 @@ describe('DailyWord Bot Functional Tests', () => {
 
       await updateWordInterval(testUserWordId, true);
 
-      const after = await supabase
+      const after = await db('test')
         .from('user_words')
         .select('interval, correct_count')
         .eq('id', testUserWordId)
@@ -343,7 +368,7 @@ describe('DailyWord Bot Functional Tests', () => {
     });
 
     it('should decrease interval on incorrect answer', async () => {
-      const before = await supabase
+      const before = await db('test')
         .from('user_words')
         .select('interval')
         .eq('id', testUserWordId)
@@ -353,7 +378,7 @@ describe('DailyWord Bot Functional Tests', () => {
 
       await updateWordInterval(testUserWordId, false);
 
-      const after = await supabase
+      const after = await db('test')
         .from('user_words')
         .select('interval, incorrect_count')
         .eq('id', testUserWordId)
@@ -369,7 +394,7 @@ describe('DailyWord Bot Functional Tests', () => {
         await updateWordInterval(testUserWordId, true);
       }
 
-      const { data: userWord } = await supabase
+      const { data: userWord } = await db('test')
         .from('user_words')
         .select('correct_count')
         .eq('id', testUserWordId)
@@ -380,10 +405,11 @@ describe('DailyWord Bot Functional Tests', () => {
 
     it('should get due words correctly', async () => {
       // Set word as due (next_review in past)
-      await supabase
+      await db('test')
         .from('user_words')
         .update({
-          next_review: new Date(Date.now() - 1000).toISOString()
+          next_review: new Date(Date.now() - 1000).toISOString(),
+          served_at: new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString()
         })
         .eq('id', testUserWordId);
 
@@ -398,16 +424,19 @@ describe('DailyWord Bot Functional Tests', () => {
       const today = new Date();
       today.setUTCHours(0, 0, 0, 0);
       
-      const { data: todayWord } = await supabase
-        .from('user_words')
-        .insert({
-          user_id: testUserId,
-          word_id: testWordId,
-          served_at: today.toISOString(),
-          next_review: new Date(Date.now() - 1000).toISOString()
-        })
-        .select()
-        .single();
+      const todayWord = await insertOrThrow(
+        db('test')
+          .from('user_words')
+          .insert({
+            user_id: testUserId,
+            word_id: testWordId,
+            served_at: today.toISOString(),
+            next_review: new Date(Date.now() - 1000).toISOString()
+          })
+          .select()
+          .single(),
+        'insert today user_word'
+      );
 
       const dueWords = await getDueWords(testUserId, 10, true);
       
@@ -416,7 +445,7 @@ describe('DailyWord Bot Functional Tests', () => {
       expect(todayWordInDue).toBeUndefined();
 
       // Cleanup
-      await supabase.from('user_words').delete().eq('id', todayWord.id);
+      await db('test').from('user_words').delete().eq('id', todayWord.id);
     });
 
     it('should get today words correctly', async () => {
@@ -503,7 +532,7 @@ describe('DailyWord Bot Functional Tests', () => {
       testSessionId = session.id;
 
       // Manually expire session
-      await supabase
+      await db('test')
         .from('active_sessions')
         .update({
           expires_at: new Date(Date.now() - 1000).toISOString()
@@ -596,7 +625,7 @@ describe('DailyWord Bot Functional Tests', () => {
 
     beforeEach(async () => {
       // Create due word
-      await supabase
+      await db('test')
         .from('user_words')
         .insert({
           user_id: testUserId,
@@ -610,7 +639,7 @@ describe('DailyWord Bot Functional Tests', () => {
       if (sessionId) {
         await sessionManager.completeSession(sessionId);
       }
-      await supabase.from('user_words').delete().eq('user_id', testUserId).eq('word_id', testWordId);
+      await db('test').from('user_words').delete().eq('user_id', testUserId).eq('word_id', testWordId);
     });
 
     it('should create session with due words', async () => {
@@ -641,7 +670,7 @@ describe('DailyWord Bot Functional Tests', () => {
         // Process correct answer
         await updateWordInterval(userWordId, true);
 
-        const after = await supabase
+        const after = await db('test')
           .from('user_words')
           .select('interval, correct_count')
           .eq('id', userWordId)

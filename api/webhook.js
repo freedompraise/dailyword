@@ -1,5 +1,5 @@
 const TelegramBot = require('node-telegram-bot-api');
-const supabase = require('../supabaseClient');
+const db = require('../db');
 const { getWelcomeMessage, getHelpMessage, formatTimeUntilNextWord, hasReceivedTodayWords, getFriendlyResponse } = require('../lib/utils');
 const { getUserByChatId, ensureUser, getUserById } = require('../lib/userUtils');
 const sessionManager = require('../lib/sessionManager');
@@ -11,11 +11,16 @@ const {
   createDefinitionKeyboard,
   createChallengeKeyboard,
   createFeedbackKeyboard,
-  createReviewStartKeyboard
+  createReviewStartKeyboard,
+  createSessionSummaryKeyboard
 } = require('../lib/keyboardUtils');
+const repo = require('../lib/repo');
+const { pickMotivation } = require('../lib/motivations');
 
 const TELEGRAM_TOKEN = process.env.TELEGRAM_TOKEN;
 const ADMIN_CHAT_ID = process.env.ADMIN_CHAT_ID || null;
+const REVIEW_SOFT_CAP = 5;
+const REVIEW_HARD_CAP = 10;
 
 let bot;
 if (TELEGRAM_TOKEN) {
@@ -29,21 +34,21 @@ async function updateUserStreak(userId) {
   const now = new Date();
   const nowISO = now.toISOString();
   const oneDay = 24 * 60 * 60 * 1000;
-  const { data: stat } = await supabase.from('user_stats').select('*').eq('user_id', userId).maybeSingle();
+  const { data: stat } = await repo.getUserStats(userId, 'id,streak,last_completed');
   if (!stat) {
-    await supabase.from('user_stats').insert({ user_id: userId, streak: 1, last_completed: nowISO });
+    await repo.upsertUserStats(userId, { streak: 1, last_completed: nowISO });
     return;
   }
   if (stat.last_completed) {
     const lastCompletedDate = new Date(stat.last_completed);
     const timeDiff = now.getTime() - lastCompletedDate.getTime();
     if (timeDiff <= oneDay * 2) {
-      await supabase.from('user_stats').update({ streak: stat.streak + 1, last_completed: nowISO }).eq('id', stat.id);
+      await repo.updateUserStatsById(stat.id, { streak: stat.streak + 1, last_completed: nowISO });
     } else {
-      await supabase.from('user_stats').update({ streak: 1, last_completed: nowISO }).eq('id', stat.id);
+      await repo.updateUserStatsById(stat.id, { streak: 1, last_completed: nowISO });
     }
   } else {
-    await supabase.from('user_stats').update({ streak: 1, last_completed: nowISO }).eq('id', stat.id);
+    await repo.updateUserStatsById(stat.id, { streak: 1, last_completed: nowISO });
   }
 }
 
@@ -62,6 +67,15 @@ function getMessageFromUpdate(update) {
 function getChatId(msg) {
   if (!msg || !msg.chat) return null;
   return msg.chat.id;
+}
+
+function resolveReviewCount(requestedCount, fetchedCount, explicit) {
+  const requested = requestedCount || REVIEW_SOFT_CAP;
+  const capped = Math.min(requested, REVIEW_HARD_CAP);
+  if (!explicit) {
+    return Math.max(1, Math.min(REVIEW_SOFT_CAP, capped, fetchedCount));
+  }
+  return Math.max(1, Math.min(capped, fetchedCount));
 }
 
 if (!bot) {
@@ -93,12 +107,10 @@ async function handleCallbackQuery(callbackQuery) {
     if (action === 'word') {
       const subAction = parts[1];
       const wordId = parseInt(parts[2], 10);
+      const contextFlag = parts[3] || null;
+      const allowPractice = contextFlag !== 'np';
       
-      const { data: word } = await supabase
-        .from('words')
-        .select('*')
-        .eq('id', wordId)
-        .single();
+      const { data: word } = await repo.getWordById(wordId);
       
       if (!word) {
         await bot.answerCallbackQuery(callbackQuery.id, { text: 'Word not found' });
@@ -116,10 +128,10 @@ async function handleCallbackQuery(callbackQuery) {
           chat_id: chatId,
           message_id: messageId,
           parse_mode: 'HTML',
-          ...createDefinitionKeyboard(wordId, !!word.example_2)
+          ...createDefinitionKeyboard(wordId, !!word.example_2, allowPractice)
         });
       } else if (subAction === 'practice' || subAction === 'challenge') {
-        await initiateRecallChallenge(chatId, user.id, wordId);
+        await initiateRecallChallenge(chatId, user.id, wordId, word);
       } else if (subAction === 'example') {
         let exampleText = `${word.word}\n\n`;
         if (word.example_2) {
@@ -134,7 +146,7 @@ async function handleCallbackQuery(callbackQuery) {
           chat_id: chatId,
           message_id: messageId,
           parse_mode: 'HTML',
-          ...createDefinitionKeyboard(wordId, false)
+          ...createDefinitionKeyboard(wordId, false, allowPractice)
         });
       } else if (subAction === 'back') {
         let cardText = `${word.word}`;
@@ -149,7 +161,7 @@ async function handleCallbackQuery(callbackQuery) {
           chat_id: chatId,
           message_id: messageId,
           parse_mode: 'HTML',
-          ...createWordCardKeyboard(wordId)
+          ...(allowPractice ? createWordCardKeyboard(wordId) : createNewWordCardKeyboard(wordId))
         });
       }
     } else if (action === 'review') {
@@ -157,7 +169,8 @@ async function handleCallbackQuery(callbackQuery) {
       
       if (subAction === 'start') {
         const count = parts[2] ? parseInt(parts[2], 10) : (user.review_words_per_session || 3);
-        await startReviewSession(chatId, user.id, count);
+        const explicit = !!parts[2];
+        await startReviewSession(chatId, user.id, count, explicit);
       } else if (subAction === 'list') {
         const dueWords = await getDueWords(user.id, 10);
         if (dueWords.length === 0) {
@@ -214,23 +227,14 @@ async function handleCallbackQuery(callbackQuery) {
 }
 
 async function processRecallAnswer(chatId, userId, sessionId, wordId, userAnswer) {
-  const { data: word } = await supabase
-    .from('words')
-    .select('*')
-    .eq('id', wordId)
-    .single();
+  const { data: word } = await repo.getWordById(wordId);
   
   if (!word) {
     await bot.sendMessage(chatId, 'Word not found.');
     return;
   }
   
-  const { data: userWord } = await supabase
-    .from('user_words')
-    .select('*')
-    .eq('user_id', userId)
-    .eq('word_id', wordId)
-    .maybeSingle();
+  const { data: userWord } = await repo.getUserWord(userId, wordId);
   
   if (!userWord) {
     await bot.sendMessage(chatId, 'Word not found in your vocabulary.');
@@ -315,12 +319,9 @@ async function sendChallengeFeedback(chatId, word, wasCorrect, validation, sessi
 }
 
 // Initiate a recall challenge for a word
-async function initiateRecallChallenge(chatId, userId, wordId) {
-  const { data: word } = await supabase
-    .from('words')
-    .select('*')
-    .eq('id', wordId)
-    .single();
+async function initiateRecallChallenge(chatId, userId, wordId, preloadedWord = null) {
+  const wordRecord = preloadedWord ? { data: preloadedWord } : await repo.getWordById(wordId);
+  const { data: word } = wordRecord;
   
   if (!word) {
     await bot.sendMessage(chatId, 'Word not found.');
@@ -343,21 +344,27 @@ async function initiateRecallChallenge(chatId, userId, wordId) {
   });
 }
 
-async function startReviewSession(chatId, userId, wordCount) {
+async function startReviewSession(chatId, userId, requestedCount, explicit = false) {
   const existingSession = await sessionManager.getActiveSession(userId);
   if (existingSession) {
     await bot.sendMessage(chatId, 'You already have an active review session. Complete it first or use /cancel to end it.');
     return;
   }
   
-  const dueWords = await getDueWords(userId, wordCount, true);
+  const fetchLimit = Math.min(requestedCount || REVIEW_SOFT_CAP, REVIEW_HARD_CAP);
+  const dueWords = await getDueWords(userId, fetchLimit, true);
   if (dueWords.length === 0) {
     await bot.sendMessage(chatId, '✅ No words due for review right now. Check back later!');
     return;
   }
   
-  const wordIds = dueWords.map(uw => uw.word_id);
+  const finalCount = resolveReviewCount(requestedCount, dueWords.length, explicit);
+  const wordIds = dueWords.slice(0, finalCount).map(uw => uw.word_id);
   const session = await sessionManager.createSession(userId, 'review', wordIds);
+  
+  if (finalCount < (requestedCount || fetchLimit)) {
+    await bot.sendMessage(chatId, `🔎 Starting with ${finalCount} words (capped to keep it focused).`);
+  }
   
   await continueReviewSession(chatId, userId, session.id, wordIds[0]);
 }
@@ -369,11 +376,7 @@ async function continueReviewSession(chatId, userId, sessionId, wordId) {
     return;
   }
   
-  const { data: word } = await supabase
-    .from('words')
-    .select('*')
-    .eq('id', wordId)
-    .single();
+  const { data: word } = await repo.getWordById(wordId);
   
   if (!word) {
     await bot.sendMessage(chatId, 'Word not found.');
@@ -399,11 +402,7 @@ async function continueReviewSession(chatId, userId, sessionId, wordId) {
 
 // Show hint for a word
 async function showHint(chatId, wordId) {
-  const { data: word } = await supabase
-    .from('words')
-    .select('*')
-    .eq('id', wordId)
-    .single();
+  const { data: word } = await repo.getWordById(wordId);
   
   if (!word) return;
   
@@ -413,6 +412,47 @@ async function showHint(chatId, wordId) {
   const hint = firstLetter + '_'.repeat(length - 1);
   
   await bot.sendMessage(chatId, `💡 Hint: ${hint} (${length} letters)`);
+}
+
+async function sendLeaderboard(chatId) {
+  const { data, error } = await repo.getLeaderboard(10);
+  let rows = data;
+  let streakMap = new Map();
+  if (error) {
+    console.warn('Leaderboard view missing, falling back to ad-hoc query', error.message || error);
+    const fallback = await db()
+      .from('user_words')
+      .select('user_id, total:count(*)')
+      .group('user_id')
+      .order('total', { ascending: false })
+      .limit(10);
+    if (fallback.error) {
+      await bot.sendMessage(chatId, 'Leaderboard is warming up. Try again later.');
+      return;
+    }
+    rows = fallback.data;
+    const ids = rows.map(r => r.user_id);
+    if (ids.length > 0) {
+      const { data: statsData } = await db().from('user_stats').select('user_id, streak').in('user_id', ids);
+      if (statsData) {
+        streakMap = new Map(statsData.map(s => [s.user_id, s.streak || 0]));
+      }
+    }
+  }
+  if (!rows || rows.length === 0) {
+    await bot.sendMessage(chatId, 'No leaderboard data yet. Learn a word to take the top spot!');
+    return;
+  }
+  
+  let text = '🏆 Leaderboard (by words learned)\n\n';
+  rows.forEach((row, idx) => {
+    const label = `User #${row.user_id}`;
+    const streak = row.streak ?? streakMap.get(row.user_id) ?? 0;
+    const total = row.total_words || row.total || 0;
+    text += `${idx + 1}. ${label} — ${total} words • 🔥 ${streak}\n`;
+  });
+  
+  await bot.sendMessage(chatId, text);
 }
 
 // Skip a word in review session
@@ -461,7 +501,7 @@ async function endReviewSession(chatId, userId, sessionId) {
   }
   
   // Get streak
-  const { data: stat } = await supabase.from('user_stats').select('streak').eq('user_id', userId).maybeSingle();
+  const { data: stat } = await db().from('user_stats').select('streak').eq('user_id', userId).maybeSingle();
   if (stat && stat.streak) {
     summaryText += `Your streak: ${stat.streak} day${stat.streak !== 1 ? 's' : ''} 🔥\n\n`;
   }
@@ -469,8 +509,15 @@ async function endReviewSession(chatId, userId, sessionId) {
   summaryText += `Great work! Keep practicing to build your vocabulary.`;
   
   await bot.sendMessage(chatId, summaryText, {
-    ...createReviewStartKeyboard(remainingDue, user.review_words_per_session || 3)
+    ...createSessionSummaryKeyboard(sessionId)
   });
+  
+  if (remainingDue > 0 || (totalCount > 0 && correctCount / totalCount < 0.6)) {
+    const pep = pickMotivation(userId);
+    if (pep) {
+      await bot.sendMessage(chatId, pep);
+    }
+  }
   
   // Complete session
   await sessionManager.completeSession(sessionId);
@@ -595,7 +642,7 @@ module.exports = async (req, res) => {
             const todayStart = new Date();
             todayStart.setUTCHours(0, 0, 0, 0);
             const todayISO = todayStart.toISOString();
-            const { data: todayWords } = await supabase.from('user_words')
+            const { data: todayWords } = await db().from('user_words')
               .select('served_at')
               .eq('user_id', user.id)
               .gte('served_at', todayISO);
@@ -619,21 +666,22 @@ module.exports = async (req, res) => {
           if (!user) {
             await bot.sendMessage(chatId, '👋 Hi! Please send /start to get started first.');
           } else {
-            await supabase.from('users').update({ words_per_day: num }).eq('id', user.id);
+            await db().from('users').update({ words_per_day: num }).eq('id', user.id);
             const emoji = num === 1 ? '📖' : num === 2 ? '📚' : '📚📚📚';
             await bot.sendMessage(chatId, `${emoji} Perfect! I'll send you ${num} word${num > 1 ? 's' : ''} every day.\n\nThis will take effect from tomorrow's delivery!`);
           }
         } else if (text.match(/^\/setreview (\d+)$/)) {
           const match = text.match(/^\/setreview (\d+)$/);
           const num = parseInt(match[1], 10);
-          if (num < 1 || num > 20) {
-            await bot.sendMessage(chatId, 'Please enter a number between 1 and 20 for review words per session.');
+          if (num < 1 || num > REVIEW_HARD_CAP) {
+            await bot.sendMessage(chatId, `Please enter a number between 1 and ${REVIEW_HARD_CAP} for review words per session.`);
           } else {
             const user = await getUserByChatId(chatId);
             if (!user) {
               await bot.sendMessage(chatId, '👋 Hi! Please send /start to get started first.');
             } else {
-              await supabase.from('users').update({ review_words_per_session: num }).eq('id', user.id);
+              const clamped = Math.min(num, REVIEW_HARD_CAP);
+              await db().from('users').update({ review_words_per_session: clamped }).eq('id', user.id);
               await bot.sendMessage(chatId, `⚙️ Perfect! Your review sessions will now include ${num} word${num > 1 ? 's' : ''} by default.`);
             }
           }
@@ -669,8 +717,8 @@ module.exports = async (req, res) => {
           if (!user) {
             await bot.sendMessage(chatId, '👋 Hi! Please send /start to get started first.');
           } else {
-            const { data: stat } = await supabase.from('user_stats').select('*').eq('user_id', user.id).maybeSingle();
-            const { data: learned } = await supabase.from('user_words')
+            const { data: stat } = await db().from('user_stats').select('*').eq('user_id', user.id).maybeSingle();
+            const { data: learned } = await db().from('user_words')
               .select('id,served_at,word_id,words:word_id(word)')
               .eq('user_id', user.id)
               .order('served_at', { ascending: true });
@@ -699,6 +747,8 @@ module.exports = async (req, res) => {
             
             await bot.sendMessage(chatId, text, { parse_mode: 'HTML' });
           }
+        } else if (text === '/leaderboard') {
+          await sendLeaderboard(chatId);
         } else if (text === '/help') {
           const helpMsg = getHelpMessage();
           await bot.sendMessage(chatId, helpMsg);
@@ -707,10 +757,7 @@ module.exports = async (req, res) => {
           if (!user) {
             await bot.sendMessage(chatId, '👋 Hi! Please send /start to get started first.');
           } else {
-            await supabase
-              .from('users')
-              .update({ pending_contact_message: true })
-              .eq('id', user.id);
+            await repo.setPendingContact(user.id, true);
             
             await bot.sendMessage(
               chatId,
@@ -748,10 +795,7 @@ module.exports = async (req, res) => {
           
           // Check if user is sending a contact message
           if (user.pending_contact_message) {
-            await supabase
-              .from('users')
-              .update({ pending_contact_message: false })
-              .eq('id', user.id);
+            await repo.setPendingContact(user.id, false);
             
             if (ADMIN_CHAT_ID) {
               const adminMessage = `📩 Message from user (ID: ${user.id}, Chat: ${chatId}):\n\n${text}`;
@@ -765,10 +809,7 @@ module.exports = async (req, res) => {
           
           // Check for /cancel command
           if (text.toLowerCase() === '/cancel') {
-            await supabase
-              .from('users')
-              .update({ pending_contact_message: false })
-              .eq('id', user.id);
+            await repo.setPendingContact(user.id, false);
             await bot.sendMessage(chatId, 'Cancelled.');
             return;
           }
@@ -785,9 +826,9 @@ module.exports = async (req, res) => {
           } else {
             // No active session - check if message matches any due word (unsolicited recall)
             const dueWords = await getDueWords(user.id, 5, true);
-            if (dueWords.length > 0) {
-              const firstDue = dueWords[0];
-              const word = firstDue.words;
+        if (dueWords.length > 0) {
+          const firstDue = dueWords[0];
+          const word = firstDue.words;
               if (word) {
                 const validation = await validateAnswer(text, word.word, word.definition || '', true);
                 if (validation.correct) {

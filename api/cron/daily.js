@@ -1,6 +1,6 @@
 // api/cron/daily.js
 const TelegramBot = require('node-telegram-bot-api')
-const supabase = require('../../supabaseClient')
+const db = require('../../db')
 const { InferenceClient } = require('@huggingface/inference')
 const { createNewWordCardKeyboard } = require('../../lib/keyboardUtils')
 
@@ -112,13 +112,13 @@ async function generateWithSeed(seed, avoidList = []) {
 
 async function batchFetchAllData(userIds) {
   const [wordsResult, userWordsResult] = await Promise.all([
-    supabase
+    db()
       .from('words')
       .select('*')
       .order('created_at', { ascending: false })
       .limit(1000),
     userIds.length > 0
-      ? supabase
+      ? db()
         .from('user_words')
         .select('user_id, word_id')
         .in('user_id', userIds)
@@ -184,13 +184,7 @@ function pickAvailableWord(userId, allWords, learnedWordIds, avoidList) {
 }
 
 async function generateUniqueWord(userId, avoidList, allWords, learnedWordIds, wordsByLowercase) {
-  const useAI = Math.random() < 0.1
-
-  if (!useAI) {
-    const dbWord = pickAvailableWord(userId, allWords, learnedWordIds, avoidList)
-    if (dbWord) return dbWord
-  }
-
+  // Always try AI first; fall back to curated words on failure/duplication
   for (let i = 0; i < 2; i++) {
     const seed = Math.floor(Math.random() * 1e9) + i
     const candidate = await generateWithSeed(seed, avoidList)
@@ -201,6 +195,9 @@ async function generateUniqueWord(userId, avoidList, allWords, learnedWordIds, w
       return candidate
     }
   }
+
+  const dbWord = pickAvailableWord(userId, allWords, learnedWordIds, avoidList)
+  if (dbWord) return dbWord
 
   if (allWords.length > 0) {
     const fallback = allWords[Math.floor(Math.random() * allWords.length)]
@@ -244,7 +241,7 @@ async function batchInsertWordsAndUserWords(allWordsToSave, allUserWordsToInsert
   }
 
   if (wordsToInsert.length > 0) {
-    const { data: insertedWords, error: insertError } = await supabase
+    const { data: insertedWords, error: insertError } = await db()
       .from('words')
       .insert(wordsToInsert)
       .select('id, word')
@@ -267,7 +264,7 @@ async function batchInsertWordsAndUserWords(allWordsToSave, allUserWordsToInsert
     let wordId = wordMap.get(wordLower)
 
     if (!wordId) {
-      const { data: existingWord, error: checkError } = await supabase
+      const { data: existingWord, error: checkError } = await db()
         .from('words')
         .select('id')
         .ilike('word', wordObj.word)
@@ -299,7 +296,7 @@ async function batchInsertWordsAndUserWords(allWordsToSave, allUserWordsToInsert
   }
 
   if (userWordsRows.length > 0) {
-    const { error: insertUserWordsError } = await supabase
+    const { error: insertUserWordsError } = await db()
       .from('user_words')
       .insert(userWordsRows)
 
@@ -386,7 +383,7 @@ async function serveWordsToUsers(users, allWords, learnedWordsByUser, wordsByLow
       continue
     }
 
-    let text = `📚 Word ${index} of ${user.words_per_day}\n\n${wordObj.word}`
+    let text = `🆕 New Word Drop\nWord ${index} of ${user.words_per_day}\n\n${wordObj.word}`
     if (wordObj.pronunciation) text += ` (${wordObj.pronunciation})`
     if (wordObj.part_of_speech) text += `\n<i>${wordObj.part_of_speech}</i>`
 
@@ -415,7 +412,7 @@ module.exports = async function handler(req, res) {
   }
 
   try {
-    const { data: users, error: usersError } = await supabase.from('users').select('*')
+    const { data: users, error: usersError } = await db().from('users').select('*')
 
     if (usersError) {
       console.error('Error fetching users:', usersError)

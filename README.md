@@ -1,6 +1,6 @@
 # Daily Word Telegram Bot
 
-A Telegram bot that sends daily vocabulary words to help users learn new words. Built with Node.js, Supabase, and Google Gemini AI.
+A Telegram bot that sends daily vocabulary words to help users learn new words. Built with Node.js, Supabase, and Hugging Face AI.
 
 ## Features
 
@@ -23,11 +23,13 @@ npm install
 
 ```
 TELEGRAM_TOKEN=your_telegram_bot_token
-GEMINI_API_KEY=your_gemini_api_key
+HF_API_KEY=your_HF_api_key
 SUPABASE_URL=your_supabase_url
 SUPABASE_SERVICE_KEY=your_supabase_service_key
 ADMIN_CHAT_ID=your_chat_id  # Optional
 ```
+
+   For local development, create `.env.local` with `DEFAULT_SCHEMA=test` so all Supabase calls use the test schema (production uses `public`).
 
 3. Run locally (uses polling):
 
@@ -52,7 +54,7 @@ See [DEPLOYMENT.md](./DEPLOYMENT.md) for detailed deployment instructions.
 2. **Set environment variables in Vercel dashboard:**
 
    - `TELEGRAM_TOKEN`
-   - `GEMINI_API_KEY`
+   - `HF_API_KEY`
    - `SUPABASE_URL`
    - `SUPABASE_SERVICE_KEY`
    - `ADMIN_CHAT_ID` (optional)
@@ -74,7 +76,7 @@ See [DEPLOYMENT.md](./DEPLOYMENT.md) for detailed deployment instructions.
 - **Webhook Handler**: `api/webhook.js` - Handles all Telegram updates
 - **Cron Jobs**: Scheduled tasks in `api/cron/` for daily operations
 - **Database**: Supabase for user data, words, and progress tracking
-- **AI**: Google Gemini for generating unique vocabulary words
+- **AI**: Hugging Face for generating unique vocabulary words
 
 <img width="1536" height="1024" alt="image" src="https://github.com/user-attachments/assets/665ba545-ccdd-4670-aa5b-2f1da1f6927c" />
 
