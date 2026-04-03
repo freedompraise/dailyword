@@ -94,10 +94,8 @@ async function generateWithSeed(seed, avoidList = []) {
 
   try {
     const res = await hf.chatCompletion({
-      model: 'meta-llama/Llama-3.2-3B-Instruct',
-      messages: [{ role: 'user', content: prompt }],
-      max_tokens: 500,
-      temperature: 0.7
+      model: 'meta-llama/Meta-Llama-3-8B-Instruct',
+      messages: [{ role: 'user', content: prompt }]
     })
 
     const text = res.choices?.[0]?.message?.content
