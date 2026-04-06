@@ -1,5 +1,4 @@
 const TelegramBot = require('node-telegram-bot-api');
-const db = require('../db');
 const { getWelcomeMessage, getHelpMessage, formatTimeUntilNextWord, hasReceivedTodayWords, getFriendlyResponse } = require('../lib/utils');
 const { getUserByChatId, ensureUser, getUserById } = require('../lib/userUtils');
 const sessionManager = require('../lib/sessionManager');
@@ -15,12 +14,11 @@ const {
   createSessionSummaryKeyboard
 } = require('../lib/keyboardUtils');
 const repo = require('../lib/repo');
-const { pickMotivation } = require('../lib/motivations');
+const { REVIEW_SOFT_CAP, REVIEW_HARD_CAP } = require('../lib/constants');
+const { claimPendingWord, getPendingWords } = require('../lib/pendingWords');
 
 const TELEGRAM_TOKEN = process.env.TELEGRAM_TOKEN;
 const ADMIN_CHAT_ID = process.env.ADMIN_CHAT_ID || null;
-const REVIEW_SOFT_CAP = 5;
-const REVIEW_HARD_CAP = 10;
 
 let bot;
 if (TELEGRAM_TOKEN) {
@@ -29,12 +27,56 @@ if (TELEGRAM_TOKEN) {
   console.error('TELEGRAM_TOKEN missing');
 }
 
+// Per-request caches to avoid duplicate DB calls within a single webhook update
+const requestCache = {
+  users: new Map(),
+  dueCounts: new Map(),
+  todayWords: new Map(),
+  stats: new Map()
+};
+
+function resetRequestCache() {
+  requestCache.users.clear();
+  requestCache.dueCounts.clear();
+  requestCache.todayWords.clear();
+  requestCache.stats.clear();
+}
+
+async function fetchUser(chatId) {
+  if (requestCache.users.has(chatId)) return requestCache.users.get(chatId);
+  const user = await fetchUser(chatId);
+  requestCache.users.set(chatId, user);
+  return user;
+}
+
+async function fetchDueCount(userId, excludeToday = true) {
+  const key = `${userId}|${excludeToday ? '1' : '0'}`;
+  if (requestCache.dueCounts.has(key)) return requestCache.dueCounts.get(key);
+  const count = await getDueWordsCount(userId, excludeToday);
+  requestCache.dueCounts.set(key, count);
+  return count;
+}
+
+async function fetchTodayWords(userId) {
+  if (requestCache.todayWords.has(userId)) return requestCache.todayWords.get(userId);
+  const words = await getTodayWords(userId);
+  requestCache.todayWords.set(userId, words);
+  return words;
+}
+
+async function fetchUserStatsCached(userId, columns = '*') {
+  if (requestCache.stats.has(userId)) return requestCache.stats.get(userId);
+  const { data: stat } = await repo.getUserStats(userId, columns);
+  requestCache.stats.set(userId, stat);
+  return stat;
+}
+
 
 async function updateUserStreak(userId) {
   const now = new Date();
   const nowISO = now.toISOString();
   const oneDay = 24 * 60 * 60 * 1000;
-  const { data: stat } = await repo.getUserStats(userId, 'id,streak,last_completed');
+  const stat = await fetchUserStatsCached(userId, 'id,streak,last_completed');
   if (!stat) {
     await repo.upsertUserStats(userId, { streak: 1, last_completed: nowISO });
     return;
@@ -93,7 +135,7 @@ async function handleCallbackQuery(callbackQuery) {
   console.log('🔘 Processing callback:', data);
   
   // Get user
-  const user = await getUserByChatId(chatId);
+  const user = await fetchUser(chatId);
   if (!user) {
     await bot.sendMessage(chatId, '👋 Hi! Please send /start to get started first.');
     return;
@@ -115,6 +157,16 @@ async function handleCallbackQuery(callbackQuery) {
       if (!word) {
         await bot.answerCallbackQuery(callbackQuery.id, { text: 'Word not found' });
         return;
+      }
+
+      try {
+        const claimed = await claimPendingWord(user.id, wordId);
+        // Once the user opens the card, enable practice and ensure persistence
+        if (claimed || !allowPractice) {
+          allowPractice = true;
+        }
+      } catch (e) {
+        console.warn('Error claiming pending word', e.message || e);
       }
       
       if (subAction === 'show') {
@@ -420,12 +472,7 @@ async function sendLeaderboard(chatId) {
   let streakMap = new Map();
   if (error) {
     console.warn('Leaderboard view missing, falling back to ad-hoc query', error.message || error);
-    const fallback = await db()
-      .from('user_words')
-      .select('user_id, total:count(*)')
-      .group('user_id')
-      .order('total', { ascending: false })
-      .limit(10);
+    const fallback = await repo.getUserWordTotals(10);
     if (fallback.error) {
       await bot.sendMessage(chatId, 'Leaderboard is warming up. Try again later.');
       return;
@@ -433,7 +480,7 @@ async function sendLeaderboard(chatId) {
     rows = fallback.data;
     const ids = rows.map(r => r.user_id);
     if (ids.length > 0) {
-      const { data: statsData } = await db().from('user_stats').select('user_id, streak').in('user_id', ids);
+      const { data: statsData } = await repo.getUserStatsByUserIds(ids, 'user_id, streak');
       if (statsData) {
         streakMap = new Map(statsData.map(s => [s.user_id, s.streak || 0]));
       }
@@ -464,7 +511,10 @@ async function skipWord(chatId, userId, sessionId, wordId) {
   const wordIds = session.word_ids;
   
   // Mark as skipped (incorrect)
-  await updateWordInterval(wordId, false);
+  const { data: userWord } = await repo.getUserWord(userId, wordId, 'id');
+  if (userWord) {
+    await updateWordInterval(userWord.id, false);
+  }
   
   // Move to next word
   const nextIndex = currentIndex + 1;
@@ -495,13 +545,13 @@ async function endReviewSession(chatId, userId, sessionId) {
   summaryText += `❌ Incorrect: ${totalCount - correctCount}/${totalCount}\n\n`;
   
   // Get remaining due words
-  const remainingDue = await getDueWordsCount(userId, true);
+  const remainingDue = await fetchDueCount(userId, true);
   if (remainingDue > 0) {
     summaryText += `You still have ${remainingDue} words due for review.\n\n`;
   }
   
   // Get streak
-  const { data: stat } = await db().from('user_stats').select('streak').eq('user_id', userId).maybeSingle();
+  const { data: stat } = await repo.getUserStats(userId, 'streak');
   if (stat && stat.streak) {
     summaryText += `Your streak: ${stat.streak} day${stat.streak !== 1 ? 's' : ''} 🔥\n\n`;
   }
@@ -532,6 +582,7 @@ module.exports = async (req, res) => {
 
   if (req.method === 'POST') {
     try {
+      resetRequestCache();
       const update = req.body;
       
       // Log incoming update for debugging
@@ -642,12 +693,10 @@ module.exports = async (req, res) => {
             const todayStart = new Date();
             todayStart.setUTCHours(0, 0, 0, 0);
             const todayISO = todayStart.toISOString();
-            const { data: todayWords } = await db().from('user_words')
-              .select('served_at')
-              .eq('user_id', user.id)
-              .gte('served_at', todayISO);
+            const { data: todayWords } = await repo.getUserWordsToday(user.id, todayISO, 'served_at');
+            const { data: pendingToday } = await getPendingWords(user.id);
             
-            const hasTodayWords = hasReceivedTodayWords(todayWords);
+            const hasTodayWords = hasReceivedTodayWords(todayWords, pendingToday);
             const welcomeMsg = getWelcomeMessage(isNewUser, hasTodayWords);
             
             await bot.sendMessage(chatId, welcomeMsg, { parse_mode: 'HTML' });
@@ -662,11 +711,11 @@ module.exports = async (req, res) => {
         } else if (text.match(/^\/setwords (1|2|3)$/)) {
           const match = text.match(/^\/setwords (1|2|3)$/);
           const num = parseInt(match[1], 10);
-          const user = await getUserByChatId(chatId);
+          const user = await fetchUser(chatId);
           if (!user) {
             await bot.sendMessage(chatId, '👋 Hi! Please send /start to get started first.');
           } else {
-            await db().from('users').update({ words_per_day: num }).eq('id', user.id);
+            await repo.updateUserById(user.id, { words_per_day: num });
             const emoji = num === 1 ? '📖' : num === 2 ? '📚' : '📚📚📚';
             await bot.sendMessage(chatId, `${emoji} Perfect! I'll send you ${num} word${num > 1 ? 's' : ''} every day.\n\nThis will take effect from tomorrow's delivery!`);
           }
@@ -676,57 +725,80 @@ module.exports = async (req, res) => {
           if (num < 1 || num > REVIEW_HARD_CAP) {
             await bot.sendMessage(chatId, `Please enter a number between 1 and ${REVIEW_HARD_CAP} for review words per session.`);
           } else {
-            const user = await getUserByChatId(chatId);
+            const user = await fetchUser(chatId);
             if (!user) {
               await bot.sendMessage(chatId, '👋 Hi! Please send /start to get started first.');
             } else {
               const clamped = Math.min(num, REVIEW_HARD_CAP);
-              await db().from('users').update({ review_words_per_session: clamped }).eq('id', user.id);
+              await repo.updateUserById(user.id, { review_words_per_session: clamped });
               await bot.sendMessage(chatId, `⚙️ Perfect! Your review sessions will now include ${num} word${num > 1 ? 's' : ''} by default.`);
             }
           }
         } else if (text === '/today') {
-          const user = await getUserByChatId(chatId);
+          const user = await fetchUser(chatId);
           if (!user) {
             await bot.sendMessage(chatId, '👋 Hi! Please send /start to get started first.');
           } else {
-            const userWords = await getTodayWords(user.id);
-            const dueCount = await getDueWordsCount(user.id, true);
+            const userWords = await fetchTodayWords(user.id);
+            const { data: pendingData } = await getPendingWords(user.id);
+            const pendingWords = pendingData || [];
+            const dueCount = await fetchDueCount(user.id, true);
+            const totalToday = (userWords?.length || 0) + pendingWords.length;
             
-            if (!userWords || userWords.length === 0) {
+            if (totalToday === 0) {
               const timeUntil = formatTimeUntilNextWord();
-              await bot.sendMessage(chatId, `📖 You haven't received today's words yet.\n\n⏰ Your next words will arrive in ${timeUntil}!\n\n🔔 Reviews due: ${dueCount}\n💡 In the meantime, use /review to practice older words or /help for commands.`);
+              await bot.sendMessage(chatId, `📚 You haven't received today's words yet.\n\n⏰ Your next words will arrive in ${timeUntil}!\n\n🔁 Reviews due: ${dueCount}\n💡 In the meantime, use /review to practice older words or /help for commands.`);
             } else {
-              let message = `📚 Today's Words (${userWords.length}):\n\n`;
-              userWords.forEach((uw, idx) => {
-                const word = uw.words || {};
-                message += `${idx + 1}. <b>${word.word}</b>`;
-                if (word.pronunciation) message += ` \`${word.pronunciation}\``;
-                message += `\n`;
-                if (word.part_of_speech) message += `   <i>${word.part_of_speech}</i>\n`;
-                message += `   Definition: ${word.definition}\n`;
-                if (word.example) message += `   Example: ${word.example}\n`;
-                message += `\n`;
-              });
-              message += `🔔 Reviews due: ${dueCount}\n💡 Use the buttons on today's word cards to practice, or /review for older words.`;
+              let message = '';
+              
+              if (pendingWords.length > 0) {
+                message += `🆕 Today's pending words (${pendingWords.length})\nTap \"Show definition\" on the cards I sent to add them to your list.\n\n`;
+                pendingWords.forEach((pw, idx) => {
+                  const word = pw.words || {};
+                  message += `${idx + 1}. <b>${word.word}</b>`;
+                  if (word.pronunciation) message += ` (${word.pronunciation})`;
+                  if (word.part_of_speech) message += ` <i>${word.part_of_speech}</i>`;
+                  message += `\n`;
+                  if (word.definition) message += `   Definition: ${word.definition}\n`;
+                  message += `\n`;
+                });
+              }
+
+              if (userWords && userWords.length > 0) {
+                message += `📦 Words already added today (${userWords.length}):\n\n`;
+                userWords.forEach((uw, idx) => {
+                  const word = uw.words || {};
+                  message += `${idx + 1}. <b>${word.word}</b>`;
+                  if (word.pronunciation) message += ` (${word.pronunciation})`;
+                  message += `\n`;
+                  if (word.part_of_speech) message += `   <i>${word.part_of_speech}</i>\n`;
+                  message += `   Definition: ${word.definition}\n`;
+                  if (word.example) message += `   Example: ${word.example}\n`;
+                  message += `\n`;
+                });
+              }
+
+              message += `🔁 Reviews due: ${dueCount}\n💡 Use /review to clear the queue and unlock more drops.`;
               await bot.sendMessage(chatId, message, { parse_mode: 'HTML' });
             }
           }
         } else if (text === '/progress') {
-          const user = await getUserByChatId(chatId);
+          const user = await fetchUser(chatId);
           if (!user) {
             await bot.sendMessage(chatId, '👋 Hi! Please send /start to get started first.');
           } else {
-            const { data: stat } = await db().from('user_stats').select('*').eq('user_id', user.id).maybeSingle();
-            const { data: learned } = await db().from('user_words')
-              .select('id,served_at,word_id,words:word_id(word)')
-              .eq('user_id', user.id)
-              .order('served_at', { ascending: true });
+            const { data: stat } = await repo.getUserStats(user.id);
+            const { data: learned } = await repo.getAllUserWords(
+              user.id,
+              'id,served_at,word_id,words:word_id(word)'
+            );
             
             const wordCount = learned ? learned.length : 0;
             const streak = stat ? stat.streak : 0;
-            const dueCount = await getDueWordsCount(user.id, true);
-            const todayWords = await getTodayWords(user.id);
+            const dueCount = await fetchDueCount(user.id, true);
+            const todayWords = await fetchTodayWords(user.id);
+            const { data: pendingToday } = await getPendingWords(user.id);
+            const pendingCount = pendingToday ? pendingToday.length : 0;
             
             let text = `📊 Your Learning Progress\n\n`;
             text += `📚 Total words learned: <b>${wordCount}</b>\n`;
@@ -734,7 +806,11 @@ module.exports = async (req, res) => {
             text += `📖 Words per day: <b>${user.words_per_day}</b>\n`;
             text += `🔁 Review words per session: <b>${user.review_words_per_session || 3}</b>\n`;
             text += `🔔 Reviews due now: <b>${dueCount}</b>\n`;
-            text += `📦 Today's new words: <b>${todayWords.length}</b>\n\n`;
+            text += `???? Today's new words: <b>${todayWords.length}</b>\n`;
+            if (pendingCount > 0) {
+              text += `??????????? Unopened words waiting: <b>${pendingCount}</b> (tap "Show definition" on the drop cards)\n`;
+            }
+            text += `\n`;
             
             if (learned && learned.length > 0) {
               text += `✨ Recent words:\n`;
@@ -753,7 +829,7 @@ module.exports = async (req, res) => {
           const helpMsg = getHelpMessage();
           await bot.sendMessage(chatId, helpMsg);
         } else if (text === '/contact') {
-          const user = await getUserByChatId(chatId);
+          const user = await fetchUser(chatId);
           if (!user) {
             await bot.sendMessage(chatId, '👋 Hi! Please send /start to get started first.');
           } else {
@@ -765,7 +841,7 @@ module.exports = async (req, res) => {
             );
           }
         } else if (text === '/review') {
-          const user = await getUserByChatId(chatId);
+          const user = await fetchUser(chatId);
           if (!user) {
             await bot.sendMessage(chatId, '👋 Hi! Please send /start to get started first.');
           } else {
@@ -773,7 +849,7 @@ module.exports = async (req, res) => {
             if (existingSession) {
               await bot.sendMessage(chatId, 'You already have an active review session. Complete it first or use /cancel to end it.');
             } else {
-              const dueCount = await getDueWordsCount(user.id, true);
+              const dueCount = await fetchDueCount(user.id, true);
               if (dueCount === 0) {
                 await bot.sendMessage(chatId, '✅ No reviews due right now. Check back after your next drop!');
               } else {
@@ -787,7 +863,7 @@ module.exports = async (req, res) => {
           }
         } else if (text && !text.startsWith('/')) {
           // Regular message - handle it
-          const user = await getUserByChatId(chatId);
+          const user = await fetchUser(chatId);
           if (!user) {
             await bot.sendMessage(chatId, '👋 Hi! Please send /start to get started first.');
             return;

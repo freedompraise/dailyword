@@ -1,6 +1,6 @@
 // api/admin.js - Admin router for admin functions (broadcast, etc.)
 const TelegramBot = require('node-telegram-bot-api');
-const db = require('../db');
+const repo = require('../lib/repo');
 const querystring = require('querystring');
 
 const TELEGRAM_TOKEN = process.env.TELEGRAM_TOKEN;
@@ -158,9 +158,7 @@ module.exports = async (req, res) => {
     
     try {
       // Get all active users
-      const { data: users, error: fetchError } = await db()
-        .from('users')
-        .select('id, chat_id');
+      const { data: users, error: fetchError } = await repo.getUsers('id, chat_id');
       
       if (fetchError) {
         console.error('Error fetching users:', fetchError);

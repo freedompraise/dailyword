@@ -1,15 +1,11 @@
-Clearly indicate new words with a proper heading
+Refactor the word delivery and review flow to prevent uncontrolled accumulation of user words while preserving meaningful interaction history.
 
-Remove the option to review again after completing a review session
+Introduce a dynamic review gating mechanism where word delivery is conditional on the user’s current review load and unread/interacted state. Ensure that new words are not served when the user exceeds defined soft and hard review thresholds of 5 and 10 respectively, and instead trigger alternative engagement mechanisms such as motivational prompts or review nudges. The motivation prompts shouldn't be send through the webhook module, but the cron. Add more motivation messages to the existing ones, and make some of them encourage the user to use the "/review" handler
 
-Dynamically cap the number of words to review per session (similar to debouncing) such that it hits a soft limit of 5 words and eventually a hard limit of 10 which it cannot exceed.
+Modify the delivery pipeline so that words are only persisted to the user’s dataset after explicit interaction (e.g., viewing the definition). Evaluate and propose implementation approaches for this interaction-gated persistence, including any required buffering or schema adjustments, before proceeding.
 
-Remove the posibility of practicing a word right from the new word card.
+Incorporate logic to track unread or unengaged words efficiently (consider caching or denormalized fields where appropriate) and use this signal to suppress further word delivery.
 
-Create a library of many texts to "motivate" the users when they aren't doing well or remind them of useful stuff, such as using the help button or sending across a message to the admin They should have a consistent messaging pattern and highly informal voice. These should be alternated and mostly replace when the user hasn't made progress with their review
+The periodic engagement features such as lightweight polls and contextual prompts should be tied to review behavior
 
-Debug New word delivery not being sent to the AI
-
-There should be like a leaderboard chart.
-
-They should be occasional polls asking each user how many words from their word list they have used in real life.
+Ensure all changes integrate cleanly with the existing schema and review scheduling logic, and identify any required additions or optimizations at the database level.  
