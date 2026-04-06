@@ -1,7 +1,7 @@
 // api/cron/weekly.js - Weekly summary cron job
 // Note: dotenv.config() removed - Vercel injects env vars directly
 const TelegramBot = require('node-telegram-bot-api');
-const db = require('../../db');
+const repo = require('../../lib/repo');
 const { getDueWordsCount } = require('../../lib/spacedRepetition');
 
 const TELEGRAM_TOKEN = process.env.TELEGRAM_TOKEN;
@@ -17,24 +17,19 @@ module.exports = async (req, res) => {
   try {
     const weekStartDate = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
     const weekStart = weekStartDate.toISOString();
-    const { data: users } = await db().from('users').select('*');
+    const { data: users } = await repo.getUsers();
     if (!users) {
       return res.status(200).json({ message: 'No users found' });
     }
     
     for (const u of users) {
       try {
-        const { data: words } = await db()
-          .from('user_words')
-          .select('served_at,served_index,correct_count,words:word_id(word,pronunciation,part_of_speech,definition)')
-          .eq('user_id', u.id)
-          .gte('served_at', weekStart)
-          .order('served_at', { ascending: true });
+        const { data: words } = await repo.getUserWordsSince(u.id, weekStart);
         
         if (!words || words.length === 0) continue;
         
         // Get stats
-        const { data: stat } = await db().from('user_stats').select('streak').eq('user_id', u.id).maybeSingle();
+        const { data: stat } = await repo.getUserStats(u.id, 'streak');
         const dueCount = await getDueWordsCount(u.id, true);
         
         // Count mastered words (3+ correct)

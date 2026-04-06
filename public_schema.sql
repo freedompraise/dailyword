@@ -60,6 +60,19 @@ create table if not exists active_sessions (
 );
 create index if not exists idx_active_sessions_user on active_sessions(user_id);
 
+-- Pending daily word offers (not yet accepted into user_words)
+create table if not exists pending_user_words (
+  id bigint generated always as identity primary key,
+  user_id bigint not null references users(id) on delete cascade,
+  word_id bigint not null references words(id) on delete cascade,
+  offered_at timestamptz not null default now(),
+  served_index integer,
+  created_at timestamptz not null default now(),
+  unique (user_id, word_id)
+);
+create index if not exists idx_pending_user_words_user on pending_user_words(user_id);
+create index if not exists idx_pending_user_words_word on pending_user_words(word_id);
+
 -- Leaderboard view aligned with current tables
 create or replace view leaderboard_view as
 select
