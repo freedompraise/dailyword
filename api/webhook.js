@@ -44,8 +44,10 @@ function resetRequestCache() {
 
 async function fetchUser(chatId) {
   if (requestCache.users.has(chatId)) return requestCache.users.get(chatId);
-  const user = await fetchUser(chatId);
-  requestCache.users.set(chatId, user);
+  const user = await getUserByChatId(chatId, false);
+  if (user) {
+    requestCache.users.set(chatId, user);
+  }
   return user;
 }
 

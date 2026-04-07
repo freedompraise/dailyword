@@ -4,12 +4,12 @@ process.env.DEFAULT_SCHEMA = 'test';
 jest.setTimeout(30000);
 
 // Factory runs when supabaseClient is first required; USE_MOCK_SUPABASE is set in CI.
-jest.mock('../supabaseClient', () => {
+jest.mock('../db', () => {
   if (process.env.USE_MOCK_SUPABASE === 'true') {
     const MockSupabaseClient = require('./mockSupabase');
     return new MockSupabaseClient();
   }
-  return jest.requireActual('../supabaseClient');
+  return jest.requireActual('../db');
 });
 
 if (process.env.USE_MOCK_SUPABASE === 'true') {

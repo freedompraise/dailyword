@@ -95,3 +95,31 @@ left join (
 -- Performance helpers for review queries
 create index if not exists idx_user_words_userid_next_review on user_words(user_id, next_review);
 create index if not exists idx_user_words_served_at on user_words(user_id, served_at);
+
+-- RPCs used by the app
+create or replace function get_due_counts(
+  now_iso timestamptz,
+  user_ids bigint[] default null,
+  exclude_today boolean default true
+) returns table(user_id bigint) language sql stable as $$
+  with filtered as (
+    select user_id, served_at, next_review
+    from user_words
+    where next_review <= now_iso
+      and (user_ids is null or user_id = any(user_ids))
+      and (exclude_today is false or served_at < date_trunc('day', now_iso))
+  )
+  select user_id from filtered;
+$$;
+
+create or replace function get_pending_counts(
+  user_ids bigint[] default null
+) returns table(user_id bigint) language sql stable as $$
+  select user_id
+  from pending_user_words
+  where user_ids is null or user_id = any(user_ids);
+$$;
+
+create or replace function get_user_word_totals()
+returns table(user_id bigint) language sql stable as $$
+  select user_id from user_words;
