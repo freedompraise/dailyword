@@ -1,18 +1,26 @@
-// tests/setup.js - test env and optional Supabase mock
-require('dotenv').config({ path: require('path').join(__dirname, '..', '.env') });
-process.env.DEFAULT_SCHEMA = 'test';
+require('dotenv').config();
+process.env.DEFAULT_SCHEMA = process.env.DEFAULT_SCHEMA || 'test';
+const mockUseSupabase = process.env.USE_MOCK_SUPABASE
+  ? process.env.USE_MOCK_SUPABASE === 'true'
+  : process.env.CI !== 'true';
 jest.setTimeout(30000);
 
-// Factory runs when supabaseClient is first required; USE_MOCK_SUPABASE is set in CI.
 jest.mock('../db', () => {
-  if (process.env.USE_MOCK_SUPABASE === 'true') {
+  if (mockUseSupabase) {
     const MockSupabaseClient = require('./mockSupabase');
-    return new MockSupabaseClient();
+    const client = new MockSupabaseClient();
+    const dbFn = (schema) => {
+      if (schema && schema !== 'public') return client.schema(schema);
+      return client;
+    };
+    dbFn.schema = (schema) => client.schema(schema);
+    dbFn.from = (...args) => client.from(...args);
+    return dbFn;
   }
   return jest.requireActual('../db');
 });
 
-if (process.env.USE_MOCK_SUPABASE === 'true') {
+if (mockUseSupabase) {
   console.log('Using mock Supabase for tests');
 } else {
   console.log('Using Supabase test schema for tests');

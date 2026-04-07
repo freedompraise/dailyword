@@ -31,4 +31,7 @@ jobs:
         run: npm test
         env:
           CI: true
-          USE_MOCK_SUPABASE: true
+          USE_MOCK_SUPABASE: false
+          DEFAULT_SCHEMA: test
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}

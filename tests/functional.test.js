@@ -15,10 +15,11 @@ const { describe, it, expect, beforeAll, afterAll, beforeEach } = require('@jest
 const db = require('../db');
 const sessionManager = require('../lib/sessionManager');
 const { validateAnswer } = require('../lib/answerValidator');
-const { updateWordInterval, getDueWords, getDueWordsCount, getTodayWords } = require('../lib/spacedRepetition');
-const { createNewWordCardKeyboard, createWordCardKeyboard, createDefinitionKeyboard, createReviewStartKeyboard } = require('../lib/keyboardUtils');
+const { updateWordInterval, getDueWords, getTodayWords } = require('../lib/spacedRepetition');
+const { createWordCardKeyboard, createDefinitionKeyboard, createReviewStartKeyboard } = require('../lib/keyboardUtils');
 
-// Mock Telegram bot for testing
+const testDb = db(process.env.DEFAULT_SCHEMA || 'test');
+
 class MockTelegramBot {
   constructor() {
     this.sentMessages = [];
@@ -56,9 +57,8 @@ describe('DailyWord Bot Functional Tests', () => {
   }
 
   beforeAll(async () => {
-    // Create test user
     const user = await insertOrThrow(
-      db('test')
+      testDb
         .from('users')
         .insert({
           chat_id: testChatId,
@@ -72,9 +72,8 @@ describe('DailyWord Bot Functional Tests', () => {
     
     testUserId = user.id;
 
-    // Create test word
     const word = await insertOrThrow(
-      db('test')
+      testDb
         .from('words')
         .insert({
           word: 'serendipity',
@@ -96,15 +95,14 @@ describe('DailyWord Bot Functional Tests', () => {
   });
 
   afterAll(async () => {
-    // Cleanup test data
     if (testUserId) {
-      await db('test').from('user_words').delete().eq('user_id', testUserId);
-      await db('test').from('active_sessions').delete().eq('user_id', testUserId);
-      await db('test').from('user_stats').delete().eq('user_id', testUserId);
-      await db('test').from('users').delete().eq('id', testUserId);
+      await testDb.from('user_words').delete().eq('user_id', testUserId);
+      await testDb.from('active_sessions').delete().eq('user_id', testUserId);
+      await testDb.from('user_stats').delete().eq('user_id', testUserId);
+      await testDb.from('users').delete().eq('id', testUserId);
     }
     if (testWordId) {
-      await db('test').from('words').delete().eq('id', testWordId);
+      await testDb.from('words').delete().eq('id', testWordId);
     }
   });
 
@@ -117,8 +115,7 @@ describe('DailyWord Bot Functional Tests', () => {
     it('should create new user on /start', async () => {
       const newChatId = '999999999';
       
-      // Check user doesn't exist
-      const { data: existing } = await db('test')
+      const { data: existing } = await testDb
         .from('users')
         .select('*')
         .eq('chat_id', newChatId)
@@ -126,9 +123,8 @@ describe('DailyWord Bot Functional Tests', () => {
       
       expect(existing).toBeNull();
 
-      // Simulate /start
       const user = await insertOrThrow(
-        db('test')
+        testDb
           .from('users')
           .insert({
             chat_id: newChatId,
@@ -144,15 +140,14 @@ describe('DailyWord Bot Functional Tests', () => {
       expect(user.chat_id).toBe(newChatId);
       expect(user.words_per_day).toBe(1);
 
-      // Cleanup
-      await db('test').from('users').delete().eq('id', user.id);
+      await testDb.from('users').delete().eq('id', user.id);
     });
 
     it('should create user_stats entry for new user', async () => {
       const newChatId = '888888888';
       
       const user = await insertOrThrow(
-        db('test')
+        testDb
           .from('users')
           .insert({
             chat_id: newChatId,
@@ -164,7 +159,7 @@ describe('DailyWord Bot Functional Tests', () => {
       );
 
       const stats = await insertOrThrow(
-        db('test')
+        testDb
           .from('user_stats')
           .insert({
             user_id: user.id,
@@ -179,9 +174,8 @@ describe('DailyWord Bot Functional Tests', () => {
       expect(stats.user_id).toBe(user.id);
       expect(stats.streak).toBe(0);
 
-      // Cleanup
-      await db('test').from('user_stats').delete().eq('id', stats.id);
-      await db('test').from('users').delete().eq('id', user.id);
+      await testDb.from('user_stats').delete().eq('id', stats.id);
+      await testDb.from('users').delete().eq('id', user.id);
     });
   });
 
@@ -219,7 +213,6 @@ describe('DailyWord Bot Functional Tests', () => {
     });
 
     it('should prioritize existing words from database over AI generation', async () => {
-      // Create multiple words in DB
       const words = [
         { word: 'test1', pronunciation: '/test1/', part_of_speech: 'noun', definition: 'test 1', example: 'test 1', example_2: 'test 1 again' },
         { word: 'test2', pronunciation: '/test2/', part_of_speech: 'noun', definition: 'test 2', example: 'test 2', example_2: 'test 2 again' },
@@ -227,12 +220,10 @@ describe('DailyWord Bot Functional Tests', () => {
       ];
 
       for (const w of words) {
-        await db('test').from('words').insert(w);
+        await testDb.from('words').insert(w);
       }
 
-      // Mock the daily.js functions - we'll test the prioritization logic
-      // The function should prefer DB words over AI generation
-      const { data: dbWords } = await db('test')
+      const { data: dbWords } = await testDb
         .from('words')
         .select('*')
         .limit(10);
@@ -240,9 +231,8 @@ describe('DailyWord Bot Functional Tests', () => {
       expect(dbWords).toBeDefined();
       expect(dbWords.length).toBeGreaterThan(0);
       
-      // Cleanup
       for (const w of words) {
-        await db('test').from('words').delete().ilike('word', w.word);
+        await testDb.from('words').delete().ilike('word', w.word);
       }
     });
   });
@@ -261,11 +251,9 @@ describe('DailyWord Bot Functional Tests', () => {
       const keyboard = createDefinitionKeyboard(123, true);
       const buttons = keyboard.reply_markup.inline_keyboard;
       
-      // Should not have "test me" button
       const allCallbacks = buttons.flat().map(b => b.callback_data);
       expect(allCallbacks).not.toContain(expect.stringContaining('challenge'));
       
-      // Should have back button
       expect(allCallbacks).toContain('word:back:123:p');
     });
 
@@ -297,7 +285,6 @@ describe('DailyWord Bot Functional Tests', () => {
     it('should validate fuzzy match for typos', async () => {
       const result = await validateAnswer('serendipity', 'serendipity', '', false);
       
-      // Should still match with small typo
       const result2 = await validateAnswer('serendipity', 'serendipity', '', false);
       expect(result2.correct).toBe(true);
     });
@@ -320,9 +307,8 @@ describe('DailyWord Bot Functional Tests', () => {
     let testUserWordId;
 
     beforeEach(async () => {
-      // Create test user_word
       const userWord = await insertOrThrow(
-        db('test')
+        testDb
           .from('user_words')
           .insert({
             user_id: testUserId,
@@ -342,12 +328,12 @@ describe('DailyWord Bot Functional Tests', () => {
 
     afterEach(async () => {
       if (testUserWordId) {
-        await db('test').from('user_words').delete().eq('id', testUserWordId);
+        await testDb.from('user_words').delete().eq('id', testUserWordId);
       }
     });
 
     it('should increase interval on correct answer', async () => {
-      const before = await db('test')
+      const before = await testDb
         .from('user_words')
         .select('interval')
         .eq('id', testUserWordId)
@@ -357,7 +343,7 @@ describe('DailyWord Bot Functional Tests', () => {
 
       await updateWordInterval(testUserWordId, true);
 
-      const after = await db('test')
+      const after = await testDb
         .from('user_words')
         .select('interval, correct_count')
         .eq('id', testUserWordId)
@@ -368,7 +354,7 @@ describe('DailyWord Bot Functional Tests', () => {
     });
 
     it('should decrease interval on incorrect answer', async () => {
-      const before = await db('test')
+      const before = await testDb
         .from('user_words')
         .select('interval')
         .eq('id', testUserWordId)
@@ -378,7 +364,7 @@ describe('DailyWord Bot Functional Tests', () => {
 
       await updateWordInterval(testUserWordId, false);
 
-      const after = await db('test')
+      const after = await testDb
         .from('user_words')
         .select('interval, incorrect_count')
         .eq('id', testUserWordId)
@@ -389,12 +375,11 @@ describe('DailyWord Bot Functional Tests', () => {
     });
 
     it('should mark word as mastered after 3 correct answers', async () => {
-      // Answer correctly 3 times
       for (let i = 0; i < 3; i++) {
         await updateWordInterval(testUserWordId, true);
       }
 
-      const { data: userWord } = await db('test')
+      const { data: userWord } = await testDb
         .from('user_words')
         .select('correct_count')
         .eq('id', testUserWordId)
@@ -404,8 +389,7 @@ describe('DailyWord Bot Functional Tests', () => {
     });
 
     it('should get due words correctly', async () => {
-      // Set word as due (next_review in past)
-      await db('test')
+      await testDb
         .from('user_words')
         .update({
           next_review: new Date(Date.now() - 1000).toISOString(),
@@ -420,12 +404,11 @@ describe('DailyWord Bot Functional Tests', () => {
     });
 
     it('should exclude today words from due reviews', async () => {
-      // Create today's word
       const today = new Date();
       today.setUTCHours(0, 0, 0, 0);
       
       const todayWord = await insertOrThrow(
-        db('test')
+        testDb
           .from('user_words')
           .insert({
             user_id: testUserId,
@@ -440,18 +423,15 @@ describe('DailyWord Bot Functional Tests', () => {
 
       const dueWords = await getDueWords(testUserId, 10, true);
       
-      // Should not include today's word
       const todayWordInDue = dueWords.find(w => w.id === todayWord.id);
       expect(todayWordInDue).toBeUndefined();
 
-      // Cleanup
-      await db('test').from('user_words').delete().eq('id', todayWord.id);
+      await testDb.from('user_words').delete().eq('id', todayWord.id);
     });
 
     it('should get today words correctly', async () => {
       const todayWords = await getTodayWords(testUserId);
       
-      // Should return array
       expect(Array.isArray(todayWords)).toBe(true);
     });
   });
@@ -531,8 +511,7 @@ describe('DailyWord Bot Functional Tests', () => {
 
       testSessionId = session.id;
 
-      // Manually expire session
-      await db('test')
+      await testDb
         .from('active_sessions')
         .update({
           expires_at: new Date(Date.now() - 1000).toISOString()
@@ -579,7 +558,6 @@ describe('DailyWord Bot Functional Tests', () => {
       const keyboard = createWordCardKeyboard(testWordId);
       const buttons = keyboard.reply_markup.inline_keyboard[0];
       
-      // Both options available
       expect(buttons).toHaveLength(2);
       expect(buttons[0].text).toContain('Show definition');
       expect(buttons[1].text).toContain('Start practice');
@@ -591,7 +569,6 @@ describe('DailyWord Bot Functional Tests', () => {
         .flat()
         .map(b => b.callback_data);
       
-      // Should NOT have challenge button
       expect(allCallbacks).not.toContain(expect.stringContaining('challenge'));
       expect(allCallbacks).not.toContain(expect.stringContaining('practice'));
     });
@@ -601,7 +578,6 @@ describe('DailyWord Bot Functional Tests', () => {
     it('should handle missing word gracefully', async () => {
       const result = await validateAnswer('test', 'nonexistent', '', false);
       
-      // Should return result (not throw)
       expect(result).toBeDefined();
       expect(result.correct).toBe(false);
     });
@@ -624,8 +600,7 @@ describe('DailyWord Bot Functional Tests', () => {
     let sessionId;
 
     beforeEach(async () => {
-      // Create due word
-      await db('test')
+      await testDb
         .from('user_words')
         .insert({
           user_id: testUserId,
@@ -639,7 +614,7 @@ describe('DailyWord Bot Functional Tests', () => {
       if (sessionId) {
         await sessionManager.completeSession(sessionId);
       }
-      await db('test').from('user_words').delete().eq('user_id', testUserId).eq('word_id', testWordId);
+      await testDb.from('user_words').delete().eq('user_id', testUserId).eq('word_id', testWordId);
     });
 
     it('should create session with due words', async () => {
@@ -667,10 +642,9 @@ describe('DailyWord Bot Functional Tests', () => {
         const userWordId = dueWords[0].id;
         const beforeInterval = dueWords[0].interval;
 
-        // Process correct answer
         await updateWordInterval(userWordId, true);
 
-        const after = await db('test')
+        const after = await testDb
           .from('user_words')
           .select('interval, correct_count')
           .eq('id', userWordId)
