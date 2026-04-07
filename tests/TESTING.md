@@ -60,7 +60,7 @@ The `tests/mockSupabase.js` file provides a lightweight in-memory database that 
 ### Using Real Supabase
 
 ```javascript
-const supabase = require("../supabaseClient");
+const supabase = require("../db");
 
 test("creates user", async () => {
   const { data } = await supabase
@@ -79,7 +79,7 @@ The same code works with mocks! The setup file automatically injects the mock wh
 
 ```javascript
 // Works with both real and mock Supabase
-const supabase = require("../supabaseClient");
+const supabase = require("../db");
 
 test("creates user", async () => {
   // Mock automatically initialized in CI
