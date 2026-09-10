@@ -1,6 +1,6 @@
 # Daily Word Telegram Bot
 
-A Telegram bot that sends daily vocabulary words to help users learn new words. Built with Node.js, Supabase, and Hugging Face AI.
+A Telegram bot that sends daily vocabulary words to help users learn new words. Built with Node.js, Supabase, and Hugging Face AI (moved from Gemini).
 
 ## Features
 
